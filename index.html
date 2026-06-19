@@ -121,7 +121,7 @@
                                   stroke-linejoin="round"/>
                             <path d="M5 19h14" stroke-linecap="round"/>
                         </svg>
-                        <span data-i18n="aiRecommendToggle">Recommendations from the AI</span>
+                        <span data-i18n="aiRecommendToggle">AI Recommendations</span>
                     </button>
                 </div>
             </header>
@@ -152,12 +152,15 @@
 
                     <div class="ai-recommend__status" id="ai-recommend-status" hidden></div>
 
-                    <div class="ai-recommend__results" id="ai-recommend-results" hidden>
-                        <p class="ai-recommend__notice" id="ai-recommend-notice" hidden></p>
-                        <h4 class="ai-recommend__results-title" data-i18n="aiRecommendResults">
-                            Picked for you
-                        </h4>
-                        <div class="ai-recommend__grid movie-list" id="ai-recommend-grid"></div>
+                    <div class="ai-recommend__output" id="ai-recommend-output" hidden>
+                        <div class="ai-recommend__results" id="ai-recommend-results">
+                            <h4 class="ai-recommend__results-title" id="ai-recommend-results-title"
+                                data-i18n="aiRecommendResults" hidden>
+                                Picked for you
+                            </h4>
+                            <div class="ai-recommend__narrative" id="ai-recommend-summary"></div>
+                            <div class="ai-recommend__grid" id="ai-recommend-grid"></div>
+                        </div>
                     </div>
                 </div>
             </section>

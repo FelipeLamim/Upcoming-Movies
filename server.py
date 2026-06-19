@@ -78,10 +78,14 @@ MIN_OVERVIEW_LENGTH = 30
 MAX_MOVIES = 100
 
 # AI recommendation prompt limits.
-MAX_AI_CANDIDATES = 40
-MAX_OVERVIEW_FOR_AI = 150
-MAX_CAST_FOR_AI = 8
+MAX_AI_CANDIDATES = 25
+MAX_AI_METADATA_FETCH = 10
+MAX_OVERVIEW_FOR_AI = 80
+MAX_CAST_FOR_AI = 4
 MAX_CREW_NAMES_PER_ROLE = 3
+MAX_RECOMMEND_REASON = 160
+MAX_RECOMMEND_SUMMARY = 2500
+MAX_RECOMMEND_COUNT = 5
 MAX_RECOMMEND_MESSAGE = 2000
 MAX_RECOMMEND_BODY_BYTES = 512_000
 
@@ -995,18 +999,28 @@ def render_movie_page(query):
 # AI movie recommendations
 # -----------------------------
 
-RECOMMEND_SYSTEM_PROMPT = """You are Movie Horizon's movie discovery guide.
-Recommend ONLY movies from the catalog JSON the user provides.
-Each recommendation id MUST be copied exactly from the catalog — never invent ids or titles.
-Use ALL catalog fields when matching taste: title, synopsis, tagline, genres, releaseDate,
-directors, cast, and crew.
-If the user asks for a director, actor, writer, or film not in the catalog, do not pretend it is.
-Instead pick the closest matches from the catalog and say clearly in the reason when the exact
-request is not in the current catalog.
-Do not act as a general chatbot — focus on matching taste to catalog picks.
+RECOMMEND_SYSTEM_PROMPT = """You are Movie Horizon's movie curator — warm, knowledgeable, and precise.
+
+Rules:
+- Recommend ONLY movies from the catalog JSON. Each id MUST be copied exactly from the catalog.
+- Use title, overview, genres, releaseDate, popularity, and directors when judging fit.
+- Prioritize RELEVANCE over quantity. Return 0 to 5 recommendations — never pad with weak picks.
+- Return 1 movie if only 1 strong match exists. Return 0 if nothing is a strong match.
+- Do not stretch similarities or recommend unrelated popular movies to satisfy the user.
+- Do not act as a general chatbot.
+
+Write like a premium recommendation assistant talking to the user:
+- summary: the FULL conversational explanation (2–5 short paragraphs). Open with what you searched for and how many strong matches you found. Then discuss each recommended movie in order — why it fits, what makes it distinctive, and how it compares to the others. Use natural prose, not bullet labels like "Why it matches". Mention movie titles in the text.
+- reason: optional short internal note per movie (may be empty); all user-facing reasoning belongs in summary.
+
 Respond with valid JSON only:
-{"recommendations": [{"id": <number>, "title": "<string>", "reason": "<1-2 short sentences>"}]}
-Return exactly 3 recommendations."""
+{"summary": "<string>", "recommendations": [{"id": <number>, "title": "<string>", "reason": "<string>"}]}"""
+
+RECOMMEND_RETRY_INSTRUCTION = (
+    "Your previous answer used ids not in the catalog or invalid JSON. "
+    "Use ONLY these ids: {ids}. Return valid JSON with summary and recommendations "
+    "(0–{max_count} items, only genuinely strong matches)."
+)
 
 PERSON_QUERY_PATTERNS = (
     re.compile(
@@ -1022,29 +1036,70 @@ AI_QUERY_STOPWORDS = {
     "watch", "ver", "see", "quero", "want", "like", "gosto", "the", "and", "or",
 }
 
-RECOMMEND_RETRY_INSTRUCTION = (
-    "Your previous answer used ids not in the catalog. "
-    "Use ONLY these ids: {ids}. Return exactly 3 recommendations using only those ids. "
-    "If the user's request is not in the catalog, pick the closest alternatives and explain that."
-)
 
-
-def no_catalog_match_message(site_language):
-    if site_language == "pt":
+def fallback_recommendation_summary(count, site_language):
+    """Short summary when the model omits one."""
+    pt = site_language == "pt"
+    if count == 0:
         return (
-            "Não encontramos isso no catálogo atual (próximos lançamentos / em cartaz). "
-            "Tente descrever gênero, humor ou filmes parecidos."
+            "Não encontrei uma correspondência forte no catálogo atual."
+            if pt
+            else "I couldn't find a strong match in the current catalog."
+        )
+    if count == 1:
+        return (
+            "Analisei o catálogo atual e encontrei 1 filme que combina com o seu pedido."
+            if pt
+            else "I looked through the current catalog and found 1 movie that matches your request."
+        )
+    if pt:
+        return (
+            f"Analisei o catálogo atual e encontrei {count} filmes que combinam com o seu pedido."
         )
     return (
-        "We could not find that in the current catalog (upcoming / now playing). "
-        "Try describing genre, mood, or similar films."
+        f"I looked through the current catalog and found {count} movies that match your request."
     )
 
 
-def supplement_reason(site_language):
-    if site_language == "pt":
-        return "Outra opção disponível no catálogo atual."
-    return "Another option from the current catalog."
+def extract_ai_summary(ai_payload):
+    """Read the model's narrative from common JSON keys."""
+    if not isinstance(ai_payload, dict):
+        return ""
+    for key in ("summary", "explanation", "narrative", "response", "message"):
+        value = ai_payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def build_recommendation_narrative(summary, recommendations, site_language):
+    """Ensure the API always returns a conversational narrative for the UI."""
+    summary = (summary or "").strip()
+    if len(summary) > MAX_RECOMMEND_SUMMARY:
+        summary = summary[: MAX_RECOMMEND_SUMMARY - 1].rstrip() + "…"
+
+    reason_blocks = []
+    for rec in recommendations:
+        reason = (rec.get("reason") or "").strip()
+        title = (rec.get("title") or "").strip()
+        if not reason:
+            continue
+        if title and title.lower() not in reason.lower():
+            reason_blocks.append(f"{title} — {reason}")
+        else:
+            reason_blocks.append(reason)
+
+    if len(summary) >= 120:
+        return summary
+
+    count = len(recommendations)
+    if not summary:
+        summary = fallback_recommendation_summary(count, site_language)
+
+    if reason_blocks:
+        return summary + "\n\n" + "\n\n".join(reason_blocks)
+
+    return summary
 
 
 def read_json_body(handler):
@@ -1057,38 +1112,25 @@ def read_json_body(handler):
 
 
 def compact_catalog_entry(movie, mode, ai_metadata=None):
-    """Shape a rich movie payload for the AI prompt."""
+    """Lean movie payload for the AI prompt — title, genres, overview, date, popularity."""
     meta = ai_metadata or {}
-    synopsis = (meta.get("overview") or movie.get("overview") or "").strip()
-    if len(synopsis) > MAX_OVERVIEW_FOR_AI:
-        synopsis = synopsis[: MAX_OVERVIEW_FOR_AI - 1].rstrip() + "…"
+    overview = (meta.get("overview") or movie.get("overview") or "").strip()
+    if len(overview) > MAX_OVERVIEW_FOR_AI:
+        overview = overview[: MAX_OVERVIEW_FOR_AI - 1].rstrip() + "…"
 
-    genres = meta.get("genres") or movie.get("genres") or []
     entry = {
         "id": movie.get("id"),
         "title": movie.get("title") or "Untitled",
-        "synopsis": synopsis,
-        "genres": genres,
+        "genres": (meta.get("genres") or movie.get("genres") or [])[:3],
         "releaseDate": movie.get("releaseDate") or "",
-        "mode": mode,
-        "popularity": movie.get("popularity") or 0,
+        "popularity": round(movie.get("popularity") or 0, 1),
     }
-
-    tagline = (meta.get("tagline") or movie.get("tagline") or "").strip()
-    if tagline:
-        entry["tagline"] = tagline[:120]
+    if overview:
+        entry["overview"] = overview
 
     directors = meta.get("directors") or []
     if directors:
-        entry["directors"] = directors[:3]
-
-    cast = meta.get("cast") or []
-    if cast:
-        entry["cast"] = cast[:MAX_CAST_FOR_AI]
-
-    crew = meta.get("crew") or {}
-    if crew:
-        entry["crew"] = crew
+        entry["directors"] = directors[:2]
 
     return entry
 
@@ -1128,22 +1170,11 @@ def fetch_movie_ai_metadata(movie_id, site_language):
         if name:
             cast.append(name)
 
-    crew = {}
-    for group in group_crew(credits.get("crew")):
-        role = group.get("role")
-        if role == "Director":
-            continue
-        names = (group.get("names") or [])[:MAX_CREW_NAMES_PER_ROLE]
-        if names:
-            crew[role] = names
-
     metadata = {
         "overview": details.get("overview") or "",
-        "tagline": (details.get("tagline") or "").strip(),
         "genres": [g.get("name") for g in details.get("genres") or [] if g.get("name")],
-        "directors": directors[:3],
+        "directors": directors[:2],
         "cast": cast,
-        "crew": crew,
     }
     AI_MOVIE_CREDITS_CACHE[cache_key] = (now, metadata)
     return metadata
@@ -1196,19 +1227,12 @@ def keyword_relevance_score(movie, terms, ai_metadata=None):
     if not terms:
         return 0
     meta = ai_metadata or {}
-    crew_text = " ".join(
-        name
-        for names in (meta.get("crew") or {}).values()
-        for name in names
-    )
     haystack = " ".join([
         movie.get("title") or "",
         meta.get("overview") or movie.get("overview") or "",
-        movie.get("tagline") or meta.get("tagline") or "",
         " ".join(meta.get("genres") or movie.get("genres") or []),
         " ".join(meta.get("directors") or []),
         " ".join(meta.get("cast") or []),
-        crew_text,
     ]).lower()
     return sum(1 for term in terms if term in haystack)
 
@@ -1319,7 +1343,16 @@ def build_recommend_candidates(raw_movies, mode, message="", site_language="en")
 
     preselected = order_movies_for_ai(all_movies, message, person_matches)
     selected_movies = preselected[:MAX_AI_CANDIDATES]
-    ai_metadata_by_id = enrich_catalog_movies_for_ai(selected_movies, site_language)
+
+    enrich_ids = set(person_matches.keys())
+    for movie in selected_movies[:MAX_AI_METADATA_FETCH]:
+        enrich_ids.add(int(movie["id"]))
+    movies_to_enrich = [
+        catalog_by_id[movie_id]
+        for movie_id in enrich_ids
+        if movie_id in catalog_by_id
+    ]
+    ai_metadata_by_id = enrich_catalog_movies_for_ai(movies_to_enrich, site_language)
     selected_movies = order_movies_for_ai(
         selected_movies, message, person_matches, ai_metadata_by_id
     )
@@ -1331,7 +1364,7 @@ def build_recommend_candidates(raw_movies, mode, message="", site_language="en")
         person_hit = person_matches.get(movie_id) or {}
         if person_hit.get("directors"):
             merged = list(dict.fromkeys(person_hit["directors"] + (meta.get("directors") or [])))
-            meta["directors"] = merged[:3]
+            meta["directors"] = merged[:2]
         entry = compact_catalog_entry(movie, mode, ai_metadata=meta)
         entry["id"] = movie_id
         candidates.append(entry)
@@ -1394,7 +1427,7 @@ def fetch_ai_recommendations(user_message, candidates, mode, site_language,
     catalog_json = json.dumps(candidates, ensure_ascii=False)
     user_prompt = (
         f"Browse mode: {mode}\n"
-        f"Write reasons in: {'Portuguese' if site_language == 'pt' else 'English'}\n"
+        f"Write the summary narrative in: {'Portuguese' if site_language == 'pt' else 'English'}\n"
         f"Valid catalog ids (use ONLY these): {', '.join(str(i) for i in valid_ids)}\n\n"
         f"User preferences:\n{user_message}\n\n"
         f"Catalog:\n{catalog_json}"
@@ -1404,17 +1437,14 @@ def fetch_ai_recommendations(user_message, candidates, mode, site_language,
 
     person_lines = []
     for entry in candidates:
-        bits = [f"id {entry['id']}: {entry['title']}"]
-        if entry.get("directors"):
-            bits.append(f"director: {', '.join(entry['directors'])}")
-        if entry.get("cast"):
-            bits.append(f"cast: {', '.join(entry['cast'][:4])}")
-        if len(bits) > 1:
-            person_lines.append("- " + " | ".join(bits))
-    if person_lines:
-        user_prompt += "\n\nStrong person/title matches in this catalog:\n" + "\n".join(
-            person_lines[:8]
+        if not entry.get("directors"):
+            continue
+        person_lines.append(
+            f"- id {entry['id']}: {entry['title']} (director: {', '.join(entry['directors'])})"
         )
+    if person_lines:
+        user_prompt += "\n\nStrong matches for this query:\n" + "\n".join(person_lines[:6])
+
     request_json = {
         "model": OPENAI_MODEL,
         "messages": [
@@ -1422,8 +1452,8 @@ def fetch_ai_recommendations(user_message, candidates, mode, site_language,
             {"role": "user", "content": user_prompt},
         ],
         "response_format": {"type": "json_object"},
-        "temperature": 0.6,
-        "max_tokens": 400,
+        "temperature": 0.45,
+        "max_tokens": 1200,
     }
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -1431,6 +1461,7 @@ def fetch_ai_recommendations(user_message, candidates, mode, site_language,
     }
 
     last_error = None
+    openai_started = time.perf_counter()
     for attempt in range(2):
         try:
             response = requests.post(
@@ -1466,7 +1497,8 @@ def fetch_ai_recommendations(user_message, candidates, mode, site_language,
             )
 
         content = response.json()["choices"][0]["message"]["content"]
-        return json.loads(content)
+        openai_seconds = time.perf_counter() - openai_started
+        return json.loads(content), openai_seconds
 
     if last_error:
         raise RecommendRequestError(
@@ -1479,29 +1511,32 @@ def fetch_ai_recommendations(user_message, candidates, mode, site_language,
     )
 
 
-def parse_recommendations(ai_payload, catalog_by_id):
-    """Keep only recommendations whose ids exist in the catalog."""
+def parse_ai_recommendation_response(ai_payload, catalog_by_id, site_language):
+    """Validate AI output: summary plus 0–5 catalog-only recommendations."""
     raw_items = ai_payload.get("recommendations") or []
     if not isinstance(raw_items, list):
-        return []
+        raw_items = []
 
     valid = []
     seen = set()
+    invalid_ids = False
     for item in raw_items:
         if not isinstance(item, dict):
             continue
         try:
             movie_id = int(item.get("id"))
         except (TypeError, ValueError):
+            invalid_ids = True
             continue
-        if movie_id not in catalog_by_id or movie_id in seen:
+        if movie_id not in catalog_by_id:
+            invalid_ids = True
+            continue
+        if movie_id in seen:
             continue
 
         reason = (item.get("reason") or "").strip()
-        if not reason:
-            continue
-        if len(reason) > 280:
-            reason = reason[:279].rstrip() + "…"
+        if len(reason) > MAX_RECOMMEND_REASON:
+            reason = reason[: MAX_RECOMMEND_REASON - 1].rstrip() + "…"
 
         movie = catalog_by_id[movie_id]
         valid.append({
@@ -1510,34 +1545,17 @@ def parse_recommendations(ai_payload, catalog_by_id):
             "reason": reason,
         })
         seen.add(movie_id)
-    return valid
-
-
-def supplement_recommendations(recommendations, candidates, catalog_by_id, site_language,
-                               target=3):
-    """Fill up to target picks from the catalog when the model returns too few valid ids."""
-    filled = list(recommendations)
-    seen = {rec["id"] for rec in filled}
-    filler = supplement_reason(site_language)
-    by_popularity = sorted(
-        candidates,
-        key=lambda entry: entry.get("popularity") or 0,
-        reverse=True,
-    )
-    for entry in by_popularity:
-        if len(filled) >= target:
+        if len(valid) >= MAX_RECOMMEND_COUNT:
             break
-        movie_id = entry["id"]
-        if movie_id in seen:
-            continue
-        movie = catalog_by_id[movie_id]
-        filled.append({
-            "id": movie_id,
-            "title": movie.get("title") or "Untitled",
-            "reason": filler,
-        })
-        seen.add(movie_id)
-    return filled
+
+    summary = extract_ai_summary(ai_payload)
+    summary = build_recommendation_narrative(summary, valid, site_language)
+
+    return {
+        "summary": summary,
+        "recommendations": valid,
+        "invalid_ids": invalid_ids,
+    }
 
 
 def enrich_recommendations(recommendations, catalog_by_id):
@@ -1689,59 +1707,55 @@ class AppHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "Catalog is empty. Load movies first."}, status=400)
             return
 
+        total_started = time.perf_counter()
+        build_started = time.perf_counter()
         candidates, catalog_by_id = build_recommend_candidates(
             raw_movies, mode, message, site_language
         )
-        if len(candidates) < 3:
-            self.send_json(
-                {"error": "Need at least 3 movies in the catalog for recommendations."},
-                status=400,
-            )
+        build_seconds = time.perf_counter() - build_started
+        if not candidates:
+            self.send_json({"error": "Catalog is empty. Load movies first."}, status=400)
             return
 
-        ai_payload = fetch_ai_recommendations(message, candidates, mode, site_language)
-        recommendations = parse_recommendations(ai_payload, catalog_by_id)
+        ai_payload, openai_seconds = fetch_ai_recommendations(
+            message, candidates, mode, site_language
+        )
+        parsed = parse_ai_recommendation_response(ai_payload, catalog_by_id, site_language)
 
-        if len(recommendations) < 3:
+        if parsed["invalid_ids"]:
             valid_ids = [entry["id"] for entry in candidates]
             retry_instruction = RECOMMEND_RETRY_INSTRUCTION.format(
-                ids=", ".join(str(i) for i in valid_ids)
+                ids=", ".join(str(i) for i in valid_ids),
+                max_count=MAX_RECOMMEND_COUNT,
             )
             print(
-                f"[recommend] retry valid={len(recommendations)} "
+                f"[recommend] retry invalid_ids count={len(parsed['recommendations'])} "
                 f"catalog={len(candidates)}",
                 flush=True,
             )
-            ai_payload = fetch_ai_recommendations(
+            ai_payload, openai_seconds = fetch_ai_recommendations(
                 message, candidates, mode, site_language,
                 extra_instruction=retry_instruction,
             )
-            recommendations = parse_recommendations(ai_payload, catalog_by_id)
+            parsed = parse_ai_recommendation_response(ai_payload, catalog_by_id, site_language)
 
-        notice = None
-        if len(recommendations) < 3:
-            recommendations = supplement_recommendations(
-                recommendations, candidates, catalog_by_id, site_language, target=3
-            )
-            if len(recommendations) >= 3:
-                notice = no_catalog_match_message(site_language)
-
-        if len(recommendations) < 3:
-            raise RecommendRequestError(
-                no_catalog_match_message(site_language),
-                status=422,
-            )
-
-        recommendations = enrich_recommendations(recommendations[:3], catalog_by_id)
+        recommendations = enrich_recommendations(
+            parsed["recommendations"], catalog_by_id
+        )
+        total_seconds = time.perf_counter() - total_started
         print(
-            f"[recommend] mode={mode} catalog={len(candidates)} "
-            f"returned={len(recommendations)} siteLanguage={site_language}",
+            f"[recommend] catalog={len(candidates)} "
+            f"build_time={build_seconds:.1f}s "
+            f"openai_time={openai_seconds:.1f}s "
+            f"total_time={total_seconds:.1f}s "
+            f"returned={len(recommendations)} "
+            f"siteLanguage={site_language}",
             flush=True,
         )
-        payload = {"recommendations": recommendations}
-        if notice:
-            payload["notice"] = notice
-        self.send_json(payload)
+        self.send_json({
+            "summary": parsed["summary"],
+            "recommendations": recommendations,
+        })
 
     def handle_upcoming(self, query):
         mode = normalize_mode(query.get("mode", [MODE_UPCOMING])[0])

@@ -66,18 +66,18 @@
             modeLabel: "Mode",
             langEn: "English",
             langPt: "Portuguese",
-            aiRecommendToggle: "Recommendations from the AI",
+            aiRecommendToggle: "AI Recommendations",
             aiRecommendTitle: "Find your next watch",
             aiRecommendHint: "Tell us what you like — we will pick from the current catalog only.",
             aiRecommendLabel: "Your preferences",
             aiRecommendPlaceholder: "What are you in the mood for?",
             aiRecommendSubmit: "Get recommendations",
             aiRecommendResults: "Picked for you",
-            aiRecommendLoading: "Finding matches in the catalog…",
+            aiRecommendLoading: "Finding the best matches…",
+            aiRecommendLoadingAnalyzing: "Finding the best matches…",
             aiRecommendError: "Could not get recommendations. Please try again.",
             aiRecommendEmptyCatalog: "Load the catalog first, or widen your filters.",
-            aiRecommendTooFew: "Need at least 3 movies in the catalog for recommendations.",
-            aiRecommendReason: "Why this pick",
+            aiRecommendReason: "Why it matches:",
         },
         pt: {
             eyebrow: "Em breve nos cinemas",
@@ -145,11 +145,11 @@
             aiRecommendPlaceholder: "O que você gostaria de assistir?",
             aiRecommendSubmit: "Obter recomendações",
             aiRecommendResults: "Escolhidos para você",
-            aiRecommendLoading: "Buscando correspondências no catálogo…",
+            aiRecommendLoading: "Buscando as melhores opções…",
+            aiRecommendLoadingAnalyzing: "Buscando as melhores opções…",
             aiRecommendError: "Não foi possível obter recomendações. Tente novamente.",
             aiRecommendEmptyCatalog: "Carregue o catálogo primeiro ou amplie seus filtros.",
-            aiRecommendTooFew: "São necessários pelo menos 3 filmes no catálogo para recomendar.",
-            aiRecommendReason: "Por que este filme",
+            aiRecommendReason: "Por que combina:",
         },
     };
 
@@ -236,9 +236,11 @@
         aiRecommendInput: document.getElementById("ai-recommend-input"),
         aiRecommendSubmit: document.getElementById("ai-recommend-submit"),
         aiRecommendStatus: document.getElementById("ai-recommend-status"),
+        aiRecommendOutput: document.getElementById("ai-recommend-output"),
+        aiRecommendSummary: document.getElementById("ai-recommend-summary"),
         aiRecommendResults: document.getElementById("ai-recommend-results"),
+        aiRecommendResultsTitle: document.getElementById("ai-recommend-results-title"),
         aiRecommendGrid: document.getElementById("ai-recommend-grid"),
-        aiRecommendNotice: document.getElementById("ai-recommend-notice"),
     };
 
     let siteLanguage = "en";
@@ -732,31 +734,115 @@
         );
     }
 
-    function recommendationCardHtml(movie, reason) {
-        const poster = movie.posterUrl
-            ? '<img src="' + escapeHtml(movie.posterUrl) + '" alt="' +
-              escapeHtml(movie.title) + ' poster" loading="lazy">'
-            : "";
+    function resolveRecommendNarrative(summary, recommendations) {
+        var text = (summary || "").trim();
+        var list = recommendations || [];
+        var reasons = list.map(function (rec) {
+            var reason = (rec.reason || "").trim();
+            var title = (rec.title || "").trim();
+            if (!reason) return "";
+            if (title && reason.toLowerCase().indexOf(title.toLowerCase()) === -1) {
+                return title + " — " + reason;
+            }
+            return reason;
+        }).filter(Boolean);
+
+        if (text.length >= 120) return text;
+
+        var count = list.length;
+        if (!text && count > 0) {
+            if (siteLanguage === "pt") {
+                text = count === 1
+                    ? "Analisei o catálogo atual e encontrei 1 filme que combina com o seu pedido."
+                    : "Analisei o catálogo atual e encontrei " + count +
+                        " filmes que combinam com o seu pedido.";
+            } else {
+                text = count === 1
+                    ? "I looked through the current catalog and found 1 movie that matches your request."
+                    : "I looked through the current catalog and found " + count +
+                        " movies that match your request.";
+            }
+        }
+
+        if (reasons.length) {
+            return text + (text ? "\n\n" : "") + reasons.join("\n\n");
+        }
+        return text;
+    }
+
+    function setAiRecommendNarrative(text) {
+        if (!els.aiRecommendSummary) return;
+        var narrativeText = (text || "").trim();
+        if (!narrativeText) {
+            els.aiRecommendSummary.innerHTML = "";
+            els.aiRecommendSummary.classList.remove("is-visible");
+            els.aiRecommendSummary.setAttribute("hidden", "");
+            return;
+        }
+        els.aiRecommendSummary.innerHTML = formatAiNarrative(narrativeText);
+        els.aiRecommendSummary.classList.add("is-visible");
+        els.aiRecommendSummary.removeAttribute("hidden");
+    }
+
+    function formatAiNarrative(text) {
+        var trimmed = (text || "").trim();
+        if (!trimmed) return "";
+        var paragraphs = trimmed.split(/\n\s*\n/);
+        if (paragraphs.length === 1 && trimmed.indexOf("\n") >= 0) {
+            paragraphs = trimmed.split("\n");
+        }
+        return paragraphs
+            .map(function (part) { return part.trim(); })
+            .filter(Boolean)
+            .map(function (part) {
+                return "<p>" + escapeHtml(part) + "</p>";
+            })
+            .join("");
+    }
+
+    function recommendPosterHtml(movie) {
+        const initial = escapeHtml((movie.title || "?").trim().charAt(0) || "?");
+        const alt = escapeHtml((movie.title || "Movie") + " poster");
+        const fallback =
+            '<div class="recommend-poster__fallback" aria-hidden="true">' +
+            "<span>" + initial + "</span></div>";
+        if (!movie.posterUrl) {
+            return '<div class="recommend-poster is-empty">' + fallback + "</div>";
+        }
+        return (
+            '<div class="recommend-poster">' +
+            '<img class="recommend-poster__img" src="' +
+            escapeHtml(movie.posterUrl) + '" alt="' + alt + '" loading="lazy">' +
+            fallback +
+            "</div>"
+        );
+    }
+
+    function bindRecommendPosterFallbacks(container) {
+        if (!container) return;
+        container.querySelectorAll(".recommend-poster__img").forEach(function (img) {
+            img.addEventListener("error", function () {
+                var frame = img.closest(".recommend-poster");
+                if (frame) frame.classList.add("is-fallback");
+            }, { once: true });
+        });
+    }
+
+    function recommendationCardHtml(movie) {
         const href = movieDetailHref(movie);
         const genres = (movie.genres && movie.genres.length)
-            ? '<p class="genres">' + escapeHtml(movie.genres.join(" • ")) + "</p>"
-            : "";
-        const backdropAttr = movie.backdropUrl
-            ? ' data-backdrop="' + escapeHtml(movie.backdropUrl) + '"'
+            ? '<p class="genres">' + escapeHtml(movie.genres.slice(0, 3).join(" • ")) + "</p>"
             : "";
 
         return (
-            '<a class="card-link" href="' + href + '"' + backdropAttr + ">" +
+            '<a class="card-link card-link--recommend" href="' + href + '">' +
             '<article class="movie-card movie-card--recommend">' +
-            '<div class="poster">' + poster + "</div>" +
+            recommendPosterHtml(movie) +
             '<div class="movie-info">' +
+            "<h2>" + escapeHtml(movie.title) + "</h2>" +
             '<p class="release-date">' +
             escapeHtml(formatMovieDateLine(movie)) + "</p>" +
-            "<h2>" + escapeHtml(movie.title) + "</h2>" +
             genres +
-            '<p class="recommend-reason"><span class="recommend-reason__label">' +
-            escapeHtml(t("aiRecommendReason")) + ":</span> " +
-            escapeHtml(reason) + "</p>" +
             "</div></article></a>"
         );
     }
@@ -769,8 +855,28 @@
                 overview: movie.overview || "",
                 genres: movie.genres || [],
                 releaseDate: movie.releaseDate || "",
-                mode: getMode(),
                 popularity: movie.popularity || 0,
+                posterUrl: movie.posterUrl || "",
+                backdropUrl: movie.backdropUrl || "",
+            };
+        });
+    }
+
+    function enrichRecommendationsFromCatalog(recommendations) {
+        var byId = {};
+        state.movies.forEach(function (movie) {
+            byId[movie.id] = movie;
+        });
+        return (recommendations || []).map(function (rec) {
+            var source = byId[rec.id] || {};
+            return {
+                id: rec.id,
+                title: rec.title || source.title || "Untitled",
+                reason: rec.reason || "",
+                posterUrl: rec.posterUrl || source.posterUrl || "",
+                backdropUrl: rec.backdropUrl || source.backdropUrl || "",
+                releaseDate: rec.releaseDate || source.releaseDate || "",
+                genres: (rec.genres && rec.genres.length) ? rec.genres : (source.genres || []),
             };
         });
     }
@@ -780,7 +886,9 @@
         els.aiRecommendStatus.hidden = false;
         els.aiRecommendStatus.textContent = t(messageKey);
         els.aiRecommendStatus.classList.toggle("error", !!isError);
-        els.aiRecommendStatus.classList.toggle("is-loading", messageKey === "aiRecommendLoading");
+        var isLoading = messageKey === "aiRecommendLoading" ||
+            messageKey === "aiRecommendLoadingAnalyzing";
+        els.aiRecommendStatus.classList.toggle("is-loading", isLoading && !isError);
     }
 
     function clearAiRecommendStatus() {
@@ -790,38 +898,103 @@
         els.aiRecommendStatus.classList.remove("error", "is-loading");
     }
 
-    function renderAiRecommendSkeletons() {
-        if (!els.aiRecommendGrid || !els.aiRecommendResults) return;
-        els.aiRecommendResults.hidden = false;
-        els.aiRecommendGrid.innerHTML = Array.from({ length: 3 }, function () {
-            return (
-                '<article class="movie-card skeleton">' +
-                '<div class="poster skeleton-box"></div>' +
-                '<div class="movie-info">' +
-                '<div class="skeleton-line skeleton-line--sm"></div>' +
-                '<div class="skeleton-line skeleton-line--lg"></div>' +
-                '<div class="skeleton-line"></div>' +
-                "</div></article>"
-            );
-        }).join("");
+    function hideAiRecommendOutput() {
+        if (els.aiRecommendOutput) {
+            els.aiRecommendOutput.hidden = true;
+        }
+        if (els.aiRecommendResultsTitle) {
+            els.aiRecommendResultsTitle.hidden = true;
+        }
+        if (els.aiRecommendSummary) {
+            els.aiRecommendSummary.innerHTML = "";
+            els.aiRecommendSummary.classList.remove("is-visible");
+            els.aiRecommendSummary.setAttribute("hidden", "");
+        }
+        if (els.aiRecommendGrid) {
+            els.aiRecommendGrid.innerHTML = "";
+        }
     }
 
-    function renderAiRecommendations(recommendations, notice) {
-        if (!els.aiRecommendGrid || !els.aiRecommendResults) return;
-        if (els.aiRecommendNotice) {
-            if (notice) {
-                els.aiRecommendNotice.textContent = notice;
-                els.aiRecommendNotice.hidden = false;
-            } else {
-                els.aiRecommendNotice.textContent = "";
-                els.aiRecommendNotice.hidden = true;
+    function showAiRecommendOutputLoading() {
+        hideAiRecommendOutput();
+        if (els.aiRecommendOutput) {
+            els.aiRecommendOutput.hidden = false;
+            els.aiRecommendOutput.removeAttribute("hidden");
+        }
+        renderAiRecommendSkeletons();
+    }
+
+    function recommendSkeletonCardHtml() {
+        return (
+            '<article class="movie-card movie-card--recommend skeleton" aria-hidden="true">' +
+            '<div class="recommend-poster skeleton-box"></div>' +
+            '<div class="movie-info">' +
+            '<div class="skeleton-line skeleton-line--lg"></div>' +
+            '<div class="skeleton-line skeleton-line--sm"></div>' +
+            "</div></article>"
+        );
+    }
+
+    function renderAiRecommendSkeletons() {
+        if (els.aiRecommendResultsTitle) {
+            els.aiRecommendResultsTitle.hidden = false;
+            els.aiRecommendResultsTitle.removeAttribute("hidden");
+        }
+        if (els.aiRecommendSummary) {
+            els.aiRecommendSummary.innerHTML =
+                '<div class="ai-recommend__narrative-skeleton" aria-hidden="true">' +
+                '<div class="skeleton-line skeleton-line--narrative"></div>' +
+                '<div class="skeleton-line skeleton-line--narrative"></div>' +
+                '<div class="skeleton-line skeleton-line--narrative skeleton-line--short"></div>' +
+                "</div>";
+            els.aiRecommendSummary.classList.add("is-visible");
+            els.aiRecommendSummary.removeAttribute("hidden");
+        }
+        if (!els.aiRecommendGrid) return;
+        els.aiRecommendGrid.innerHTML =
+            recommendSkeletonCardHtml() +
+            recommendSkeletonCardHtml() +
+            recommendSkeletonCardHtml();
+    }
+
+    function renderAiRecommendations(summary, recommendations) {
+        if (!els.aiRecommendResults) return;
+
+        var list = enrichRecommendationsFromCatalog(recommendations || []);
+        var narrativeText = resolveRecommendNarrative(summary, list);
+        var hasNarrative = !!narrativeText.trim();
+        var hasCards = list.length > 0;
+
+        if (els.aiRecommendResultsTitle) {
+            var showResults = hasNarrative || hasCards;
+            els.aiRecommendResultsTitle.hidden = !showResults;
+            if (showResults) {
+                els.aiRecommendResultsTitle.removeAttribute("hidden");
             }
         }
-        els.aiRecommendGrid.innerHTML = recommendations.map(function (rec) {
-            return recommendationCardHtml(rec, rec.reason);
-        }).join("");
+
+        setAiRecommendNarrative(narrativeText);
+
+        if (els.aiRecommendGrid) {
+            els.aiRecommendGrid.innerHTML = hasCards
+                ? list.map(function (rec) {
+                    return recommendationCardHtml(rec);
+                }).join("")
+                : "";
+            if (hasCards) {
+                bindRecommendPosterFallbacks(els.aiRecommendGrid);
+            }
+        }
+
         els.aiRecommendResults.hidden = false;
-        preloadBackdrops(recommendations);
+        els.aiRecommendResults.removeAttribute("hidden");
+        if (els.aiRecommendOutput) {
+            els.aiRecommendOutput.hidden = false;
+            els.aiRecommendOutput.removeAttribute("hidden");
+        }
+        if (hasCards) {
+            preloadBackdrops(list);
+        }
     }
 
     function getRecommendationCatalog() {
@@ -841,19 +1014,14 @@
         const catalog = getRecommendationCatalog();
         if (!catalog.length) {
             setAiRecommendStatus("aiRecommendEmptyCatalog", true);
-            if (els.aiRecommendResults) els.aiRecommendResults.hidden = true;
-            return;
-        }
-        if (catalog.length < 3) {
-            setAiRecommendStatus("aiRecommendTooFew", true);
-            if (els.aiRecommendResults) els.aiRecommendResults.hidden = true;
+            hideAiRecommendOutput();
             return;
         }
 
         els.aiRecommendSubmit.disabled = true;
         clearAiRecommendStatus();
         setAiRecommendStatus("aiRecommendLoading", false);
-        renderAiRecommendSkeletons();
+        showAiRecommendOutputLoading();
 
         try {
             const response = await fetch("/api/recommend", {
@@ -871,10 +1039,11 @@
                 throw new Error(data.error || t("aiRecommendError"));
             }
             clearAiRecommendStatus();
-            renderAiRecommendations(data.recommendations || [], data.notice || "");
+            var apiSummary = data.summary || data.narrative || data.explanation || "";
+            renderAiRecommendations(apiSummary, data.recommendations || []);
         } catch (error) {
             setAiRecommendStatus("aiRecommendError", true);
-            if (els.aiRecommendResults) els.aiRecommendResults.hidden = true;
+            hideAiRecommendOutput();
             if (error && error.message && error.message !== t("aiRecommendError")) {
                 els.aiRecommendStatus.textContent = error.message;
             }

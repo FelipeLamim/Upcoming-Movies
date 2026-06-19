@@ -584,64 +584,277 @@ a { color: inherit; text-decoration: none; }
     color: var(--muted);
     font-size: 0.92rem;
     text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
 }
 
-.ai-recommend__status.error {
-    color: #ffb4b4;
-    border-color: rgba(255, 120, 120, 0.4);
+.ai-recommend__status.is-loading::before {
+    content: "";
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(212, 176, 106, 0.25);
+    border-top-color: var(--gold);
+    border-radius: 50%;
+    animation: ai-spin 0.75s linear infinite;
+    flex-shrink: 0;
 }
+
+@keyframes ai-spin {
+    to { transform: rotate(360deg); }
+}
+
+.ai-recommend__status.error { color: #ffb4b4; border-color: rgba(255, 120, 120, 0.4); }
 
 .ai-recommend__status.is-loading {
     color: var(--gold);
     border-color: rgba(212, 176, 106, 0.35);
 }
 
-.ai-recommend__results {
-    margin-top: 22px;
-    padding-top: 20px;
-    border-top: 1px solid var(--border);
+.ai-recommend__output {
+    margin-top: 18px;
 }
 
-.ai-recommend__notice {
-    margin: 0 0 14px;
-    padding: 12px 14px;
-    border: 1px solid rgba(212, 176, 106, 0.28);
-    border-radius: 12px;
-    background: rgba(212, 176, 106, 0.08);
-    color: var(--gold);
-    font-size: 0.88rem;
-    line-height: 1.5;
+.ai-recommend__output[hidden] {
+    display: none !important;
+}
+
+.ai-recommend__results {
+    position: relative;
+    isolation: isolate;
+    margin-top: 0;
+    padding-top: 0;
 }
 
 .ai-recommend__results-title {
-    margin: 0 0 16px;
-    font-size: 0.82rem;
+    position: relative;
+    z-index: 3;
+    margin: 0 0 14px;
+    font-size: 0.78rem;
     font-weight: 600;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--muted);
 }
 
-.ai-recommend__grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 24px;
+.ai-recommend__narrative {
+    display: none;
+    position: relative;
+    z-index: 2;
+    margin: 0 0 22px;
+    color: rgba(245, 247, 251, 0.92);
+    font-size: 0.92rem;
+    line-height: 1.65;
 }
 
-.recommend-reason {
+.ai-recommend__narrative.is-visible {
+    display: block;
+}
+
+.ai-recommend__narrative[hidden] {
+    display: none !important;
+}
+
+.ai-recommend__narrative p {
+    margin: 0 0 14px;
+}
+
+.ai-recommend__narrative p:last-child {
+    margin-bottom: 0;
+}
+
+.ai-recommend__narrative-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.skeleton-line--narrative {
+    width: 100%;
+    height: 12px;
+}
+
+.skeleton-line--narrative.skeleton-line--short {
+    width: 72%;
+}
+
+.ai-recommend__grid {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+    gap: 14px;
+    align-items: start;
+    margin-top: 0;
+    padding-top: 4px;
+}
+
+.ai-recommend__results:has(.ai-recommend__narrative.is-visible) .ai-recommend__grid:not(:empty) {
+    margin-top: 4px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+}
+
+.card-link--recommend {
+    display: block;
+    height: auto;
+    position: relative;
+    z-index: 0;
+    border-radius: 14px;
+    overflow: hidden;
+}
+
+.card-link--recommend:hover,
+.card-link--recommend:focus-visible {
+    z-index: 1;
+}
+
+.movie-card--recommend {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+    overflow: hidden;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.card-link--recommend:hover .movie-card--recommend,
+.card-link--recommend:focus-visible .movie-card--recommend {
+    border-color: var(--gold-soft);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
+}
+
+.recommend-poster {
+    position: relative;
+    width: 100%;
+    flex: 0 0 auto;
+    aspect-ratio: 2 / 3;
+    overflow: hidden;
+    background:
+        linear-gradient(145deg, rgba(212, 176, 106, 0.12), rgba(20, 24, 34, 0.95)),
+        #12151c;
+}
+
+.recommend-poster__img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.45s ease;
+}
+
+.card-link--recommend:hover .recommend-poster__img,
+.card-link--recommend:focus-visible .recommend-poster__img {
+    transform: scale(1.05);
+}
+
+.recommend-poster__fallback {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background:
+        radial-gradient(circle at 30% 20%, rgba(212, 176, 106, 0.18), transparent 55%),
+        linear-gradient(160deg, #151922, #0d1016);
+}
+
+.recommend-poster__fallback span {
+    font-family: "Playfair Display", Georgia, serif;
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: rgba(212, 176, 106, 0.55);
+    line-height: 1;
+}
+
+.recommend-poster.is-empty .recommend-poster__fallback,
+.recommend-poster.is-fallback .recommend-poster__fallback {
+    display: flex;
+}
+
+.recommend-poster.is-fallback .recommend-poster__img {
+    display: none;
+}
+
+.movie-card--recommend .movie-info {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    min-width: 0;
+    padding: 8px 9px 9px;
+    gap: 2px;
+}
+
+.movie-card--recommend h2 {
     margin: 0;
-    color: var(--text);
-    font-size: 0.88rem;
-    line-height: 1.55;
+    font-family: Inter, system-ui, sans-serif;
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1.25;
     display: -webkit-box;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
 
-.recommend-reason__label {
-    color: var(--gold);
-    font-weight: 600;
+.movie-card--recommend .release-date {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.64rem;
+    line-height: 1.3;
+}
+
+.movie-card--recommend .genres {
+    margin: 2px 0 0;
+    color: var(--muted);
+    font-size: 0.62rem;
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.movie-card--recommend.skeleton .recommend-poster {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+}
+
+.movie-card--recommend.skeleton .movie-info {
+    padding: 8px 9px 9px;
+}
+
+.movie-card--recommend.skeleton .skeleton-line--lg {
+    width: 88%;
+    height: 10px;
+}
+
+.movie-card--recommend.skeleton .skeleton-line--sm {
+    width: 62%;
+    height: 8px;
+    margin-top: 6px;
+}
+
+@media (min-width: 640px) {
+    .ai-recommend__grid {
+        grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+        gap: 16px;
+    }
+
+    .ai-recommend__narrative {
+        font-size: 0.96rem;
+    }
+}
+
+@media (min-width: 960px) {
+    .ai-recommend__grid {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
 }
 
 @media (max-width: 640px) {
