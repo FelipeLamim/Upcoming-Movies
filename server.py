@@ -19,10 +19,15 @@ GET /api/movie/<id>
     Query params: siteLanguage.
     Returns the details needed by the detail page: title, poster, release
     date, overview, trailer, cast, and grouped crew.
+
+POST /api/recommend
+    JSON body: message, mode, siteLanguage, movies (compact catalog snapshot).
+    Calls OpenAI server-side and returns 3–5 catalog-only recommendations.
 """
 
 import json
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
@@ -42,6 +47,8 @@ STATIC_DIR = BASE_DIR / "static"
 
 load_dotenv(BASE_DIR / ".env.local")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = "gpt-4o-mini"
 
 if not TMDB_API_KEY:
     raise SystemExit(
@@ -70,6 +77,14 @@ MIN_POPULARITY = 2
 MIN_OVERVIEW_LENGTH = 30
 MAX_MOVIES = 100
 
+# AI recommendation prompt limits.
+MAX_AI_CANDIDATES = 40
+MAX_OVERVIEW_FOR_AI = 150
+MAX_CAST_FOR_AI = 8
+MAX_CREW_NAMES_PER_ROLE = 3
+MAX_RECOMMEND_MESSAGE = 2000
+MAX_RECOMMEND_BODY_BYTES = 512_000
+
 # How many discover pages to pull at most (each page ~20 movies). Caps latency.
 MAX_PAGES = 15
 
@@ -83,6 +98,7 @@ RELEASE_DATES_CACHE = {}
 MOVIE_ORIGINAL_RELEASE_CACHE = {}
 # Combined original + release_dates for now-playing slow-path checks.
 MOVIE_NOW_PLAYING_META_CACHE = {}
+AI_MOVIE_CREDITS_CACHE = {}
 CACHE_TTL_SECONDS = 15 * 60  # 15 minutes (within the 10–30 min target)
 
 # Valid browsing modes for the catalog API.
@@ -976,6 +992,570 @@ def render_movie_page(query):
 
 
 # -----------------------------
+# AI movie recommendations
+# -----------------------------
+
+RECOMMEND_SYSTEM_PROMPT = """You are Movie Horizon's movie discovery guide.
+Recommend ONLY movies from the catalog JSON the user provides.
+Each recommendation id MUST be copied exactly from the catalog — never invent ids or titles.
+Use ALL catalog fields when matching taste: title, synopsis, tagline, genres, releaseDate,
+directors, cast, and crew.
+If the user asks for a director, actor, writer, or film not in the catalog, do not pretend it is.
+Instead pick the closest matches from the catalog and say clearly in the reason when the exact
+request is not in the current catalog.
+Do not act as a general chatbot — focus on matching taste to catalog picks.
+Respond with valid JSON only:
+{"recommendations": [{"id": <number>, "title": "<string>", "reason": "<1-2 short sentences>"}]}
+Return exactly 3 recommendations."""
+
+PERSON_QUERY_PATTERNS = (
+    re.compile(
+        r"(?:filme|movie|film|assistir|watch).*?(?:do|da|de|by|from|with|com|starring)\s+(.+)$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?:director|diretor|direção|diretora|ator|atriz|actor|actress|star)\s+(.+)$", re.IGNORECASE),
+)
+
+AI_QUERY_STOPWORDS = {
+    "a", "o", "as", "os", "um", "uma", "de", "do", "da", "dos", "das", "em", "no", "na",
+    "por", "para", "com", "que", "filme", "film", "movie", "movies", "filmes", "assistir",
+    "watch", "ver", "see", "quero", "want", "like", "gosto", "the", "and", "or",
+}
+
+RECOMMEND_RETRY_INSTRUCTION = (
+    "Your previous answer used ids not in the catalog. "
+    "Use ONLY these ids: {ids}. Return exactly 3 recommendations using only those ids. "
+    "If the user's request is not in the catalog, pick the closest alternatives and explain that."
+)
+
+
+def no_catalog_match_message(site_language):
+    if site_language == "pt":
+        return (
+            "Não encontramos isso no catálogo atual (próximos lançamentos / em cartaz). "
+            "Tente descrever gênero, humor ou filmes parecidos."
+        )
+    return (
+        "We could not find that in the current catalog (upcoming / now playing). "
+        "Try describing genre, mood, or similar films."
+    )
+
+
+def supplement_reason(site_language):
+    if site_language == "pt":
+        return "Outra opção disponível no catálogo atual."
+    return "Another option from the current catalog."
+
+
+def read_json_body(handler):
+    """Read and parse a JSON request body with a size guard."""
+    length = int(handler.headers.get("Content-Length", 0))
+    if length <= 0 or length > MAX_RECOMMEND_BODY_BYTES:
+        raise ValueError("Invalid request body size.")
+    raw = handler.rfile.read(length)
+    return json.loads(raw.decode("utf-8"))
+
+
+def compact_catalog_entry(movie, mode, ai_metadata=None):
+    """Shape a rich movie payload for the AI prompt."""
+    meta = ai_metadata or {}
+    synopsis = (meta.get("overview") or movie.get("overview") or "").strip()
+    if len(synopsis) > MAX_OVERVIEW_FOR_AI:
+        synopsis = synopsis[: MAX_OVERVIEW_FOR_AI - 1].rstrip() + "…"
+
+    genres = meta.get("genres") or movie.get("genres") or []
+    entry = {
+        "id": movie.get("id"),
+        "title": movie.get("title") or "Untitled",
+        "synopsis": synopsis,
+        "genres": genres,
+        "releaseDate": movie.get("releaseDate") or "",
+        "mode": mode,
+        "popularity": movie.get("popularity") or 0,
+    }
+
+    tagline = (meta.get("tagline") or movie.get("tagline") or "").strip()
+    if tagline:
+        entry["tagline"] = tagline[:120]
+
+    directors = meta.get("directors") or []
+    if directors:
+        entry["directors"] = directors[:3]
+
+    cast = meta.get("cast") or []
+    if cast:
+        entry["cast"] = cast[:MAX_CAST_FOR_AI]
+
+    crew = meta.get("crew") or {}
+    if crew:
+        entry["crew"] = crew
+
+    return entry
+
+
+def fetch_movie_ai_metadata(movie_id, site_language):
+    """Fetch credits + text fields from TMDb for AI matching (cached)."""
+    tmdb_language = SITE_LANGUAGE_MAP.get(site_language, "en-US")
+    cache_key = (movie_id, tmdb_language)
+    now = time.time()
+    cached = AI_MOVIE_CREDITS_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < CACHE_TTL_SECONDS:
+        return cached[1]
+
+    try:
+        details = tmdb_get(
+            f"/movie/{movie_id}",
+            language=tmdb_language,
+            append_to_response="credits",
+        )
+    except requests.RequestException:
+        return None
+
+    credits = details.get("credits") or {}
+    directors = []
+    seen_directors = set()
+    for person in credits.get("crew") or []:
+        if person.get("job") != "Director":
+            continue
+        name = (person.get("name") or "").strip()
+        if name and name not in seen_directors:
+            seen_directors.add(name)
+            directors.append(name)
+
+    cast = []
+    for person in (credits.get("cast") or [])[:MAX_CAST_FOR_AI]:
+        name = (person.get("name") or "").strip()
+        if name:
+            cast.append(name)
+
+    crew = {}
+    for group in group_crew(credits.get("crew")):
+        role = group.get("role")
+        if role == "Director":
+            continue
+        names = (group.get("names") or [])[:MAX_CREW_NAMES_PER_ROLE]
+        if names:
+            crew[role] = names
+
+    metadata = {
+        "overview": details.get("overview") or "",
+        "tagline": (details.get("tagline") or "").strip(),
+        "genres": [g.get("name") for g in details.get("genres") or [] if g.get("name")],
+        "directors": directors[:3],
+        "cast": cast,
+        "crew": crew,
+    }
+    AI_MOVIE_CREDITS_CACHE[cache_key] = (now, metadata)
+    return metadata
+
+
+def enrich_catalog_movies_for_ai(movies, site_language):
+    """Load TMDb credits for the selected catalog entries in parallel."""
+    enriched = {}
+    if not movies:
+        return enriched
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {
+            pool.submit(fetch_movie_ai_metadata, int(movie["id"]), site_language): int(movie["id"])
+            for movie in movies
+            if movie.get("id") is not None
+        }
+        for future in futures:
+            movie_id = futures[future]
+            try:
+                metadata = future.result()
+                if metadata:
+                    enriched[movie_id] = metadata
+            except Exception:
+                continue
+    return enriched
+
+
+def extract_person_search_query(message):
+    """Pull a person name from requests like 'filme do Christopher Nolan'."""
+    text = (message or "").strip()
+    if not text:
+        return None
+    for pattern in PERSON_QUERY_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            query = match.group(1).strip(" .?!,")
+            if len(query) >= 3:
+                return query
+    return None
+
+
+def extract_query_terms(message):
+    """Tokenize the user message for lightweight title/overview matching."""
+    terms = re.findall(r"\w+", (message or "").lower(), flags=re.UNICODE)
+    return [term for term in terms if len(term) >= 3 and term not in AI_QUERY_STOPWORDS]
+
+
+def keyword_relevance_score(movie, terms, ai_metadata=None):
+    if not terms:
+        return 0
+    meta = ai_metadata or {}
+    crew_text = " ".join(
+        name
+        for names in (meta.get("crew") or {}).values()
+        for name in names
+    )
+    haystack = " ".join([
+        movie.get("title") or "",
+        meta.get("overview") or movie.get("overview") or "",
+        movie.get("tagline") or meta.get("tagline") or "",
+        " ".join(meta.get("genres") or movie.get("genres") or []),
+        " ".join(meta.get("directors") or []),
+        " ".join(meta.get("cast") or []),
+        crew_text,
+    ]).lower()
+    return sum(1 for term in terms if term in haystack)
+
+
+def find_person_catalog_matches(person_query, catalog_by_id, site_language):
+    """Map catalog ids to director/cast matches via TMDb person search."""
+    if not person_query:
+        return {}
+
+    tmdb_language = SITE_LANGUAGE_MAP.get(site_language, "en-US")
+    try:
+        data = tmdb_get("/search/person", query=person_query, language=tmdb_language)
+    except requests.RequestException:
+        return {}
+
+    catalog_ids = set(catalog_by_id.keys())
+    matches = {}
+
+    for person in data.get("results", [])[:3]:
+        person_id = person.get("id")
+        name = (person.get("name") or "").strip()
+        if not person_id or not name:
+            continue
+        try:
+            credits = tmdb_get(f"/person/{person_id}/movie_credits")
+        except requests.RequestException:
+            continue
+
+        for credit in credits.get("crew") or []:
+            if credit.get("job") != "Director":
+                continue
+            movie_id = credit.get("id")
+            if movie_id not in catalog_ids:
+                continue
+            slot = matches.setdefault(movie_id, {"directors": [], "cast": []})
+            if name not in slot["directors"]:
+                slot["directors"].append(name)
+
+        for credit in credits.get("cast") or []:
+            movie_id = credit.get("id")
+            if movie_id not in catalog_ids:
+                continue
+            slot = matches.setdefault(movie_id, {"directors": [], "cast": []})
+            if name not in slot["cast"]:
+                slot["cast"].append(name)
+
+    return matches
+
+
+def order_movies_for_ai(all_movies, message, person_matches, ai_metadata_by_id=None):
+    """Prioritize person matches, keyword hits, then popularity."""
+    terms = extract_query_terms(message)
+    matched_ids = set(person_matches.keys())
+    ai_metadata_by_id = ai_metadata_by_id or {}
+    scored = []
+
+    for movie in all_movies:
+        try:
+            movie_id = int(movie.get("id"))
+        except (TypeError, ValueError):
+            continue
+        meta = ai_metadata_by_id.get(movie_id)
+        score = keyword_relevance_score(movie, terms, meta) * 10
+        if movie_id in matched_ids:
+            score += 1000
+        score += movie.get("popularity") or 0
+        scored.append((score, movie))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    ordered = []
+    seen = set()
+    for movie_id in matched_ids:
+        movie = next((item for item in all_movies if item.get("id") == movie_id), None)
+        if movie and movie_id not in seen:
+            ordered.append(movie)
+            seen.add(movie_id)
+
+    for _, movie in scored:
+        movie_id = movie.get("id")
+        if movie_id in seen:
+            continue
+        ordered.append(movie)
+        seen.add(movie_id)
+
+    return ordered
+
+
+def build_recommend_candidates(raw_movies, mode, message="", site_language="en"):
+    """Normalize catalog entries and pick the most relevant ones for the AI prompt."""
+    catalog_by_id = {}
+    all_movies = []
+
+    for movie in raw_movies[:MAX_MOVIES]:
+        if not isinstance(movie, dict):
+            continue
+        try:
+            movie_id = int(movie.get("id"))
+        except (TypeError, ValueError):
+            continue
+        catalog_by_id[movie_id] = movie
+        all_movies.append(movie)
+
+    person_query = extract_person_search_query(message)
+    person_matches = find_person_catalog_matches(person_query, catalog_by_id, site_language)
+    if not person_matches and person_query and person_query != message:
+        person_matches = find_person_catalog_matches(message, catalog_by_id, site_language)
+
+    preselected = order_movies_for_ai(all_movies, message, person_matches)
+    selected_movies = preselected[:MAX_AI_CANDIDATES]
+    ai_metadata_by_id = enrich_catalog_movies_for_ai(selected_movies, site_language)
+    selected_movies = order_movies_for_ai(
+        selected_movies, message, person_matches, ai_metadata_by_id
+    )
+
+    candidates = []
+    for movie in selected_movies:
+        movie_id = int(movie["id"])
+        meta = dict(ai_metadata_by_id.get(movie_id) or {})
+        person_hit = person_matches.get(movie_id) or {}
+        if person_hit.get("directors"):
+            merged = list(dict.fromkeys(person_hit["directors"] + (meta.get("directors") or [])))
+            meta["directors"] = merged[:3]
+        entry = compact_catalog_entry(movie, mode, ai_metadata=meta)
+        entry["id"] = movie_id
+        candidates.append(entry)
+
+    if person_matches:
+        matched = ", ".join(
+            f"{catalog_by_id[mid].get('title')} (id {mid})"
+            for mid in person_matches
+        )
+        print(f"[recommend] person_matches={matched}", flush=True)
+
+    return candidates, catalog_by_id
+
+
+class RecommendRequestError(Exception):
+    """User-facing recommendation API failure."""
+
+    def __init__(self, message, status=502):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+def openai_error_message(status_code, api_message, site_language):
+    """Map OpenAI HTTP errors to short messages for the frontend."""
+    pt = site_language == "pt"
+    if status_code == 429:
+        return (
+            "Limite da OpenAI atingido. Aguarde um momento e tente novamente, "
+            "ou verifique sua cota em platform.openai.com."
+            if pt
+            else "OpenAI rate limit reached. Wait a moment and try again, "
+            "or check your quota at platform.openai.com."
+        )
+    if status_code == 401:
+        return (
+            "Chave OpenAI inválida. Verifique OPENAI_API_KEY em .env.local."
+            if pt
+            else "Invalid OpenAI API key. Check OPENAI_API_KEY in .env.local."
+        )
+    if status_code in (402, 403):
+        return (
+            "Acesso OpenAI negado. Verifique cobrança e permissões em platform.openai.com."
+            if pt
+            else "OpenAI access denied. Check billing and permissions at platform.openai.com."
+        )
+    if api_message:
+        return api_message
+    return (
+        "Falha ao contactar o serviço de IA. Tente novamente."
+        if pt
+        else "AI service request failed. Please try again."
+    )
+
+
+def fetch_ai_recommendations(user_message, candidates, mode, site_language,
+                             extra_instruction=None):
+    """Call OpenAI with the compact catalog and return parsed JSON recommendations."""
+    valid_ids = [entry["id"] for entry in candidates]
+    catalog_json = json.dumps(candidates, ensure_ascii=False)
+    user_prompt = (
+        f"Browse mode: {mode}\n"
+        f"Write reasons in: {'Portuguese' if site_language == 'pt' else 'English'}\n"
+        f"Valid catalog ids (use ONLY these): {', '.join(str(i) for i in valid_ids)}\n\n"
+        f"User preferences:\n{user_message}\n\n"
+        f"Catalog:\n{catalog_json}"
+    )
+    if extra_instruction:
+        user_prompt += f"\n\n{extra_instruction}"
+
+    person_lines = []
+    for entry in candidates:
+        bits = [f"id {entry['id']}: {entry['title']}"]
+        if entry.get("directors"):
+            bits.append(f"director: {', '.join(entry['directors'])}")
+        if entry.get("cast"):
+            bits.append(f"cast: {', '.join(entry['cast'][:4])}")
+        if len(bits) > 1:
+            person_lines.append("- " + " | ".join(bits))
+    if person_lines:
+        user_prompt += "\n\nStrong person/title matches in this catalog:\n" + "\n".join(
+            person_lines[:8]
+        )
+    request_json = {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": RECOMMEND_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.6,
+        "max_tokens": 400,
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=request_json,
+                timeout=45,
+            )
+        except requests.RequestException as error:
+            last_error = error
+            if attempt == 0:
+                time.sleep(1)
+                continue
+            raise RecommendRequestError(
+                openai_error_message(0, "", site_language),
+                status=502,
+            ) from error
+
+        if response.status_code == 429 and attempt == 0:
+            time.sleep(2)
+            continue
+
+        if not response.ok:
+            api_message = ""
+            try:
+                api_message = response.json().get("error", {}).get("message", "")
+            except ValueError:
+                pass
+            status = 429 if response.status_code == 429 else 502
+            raise RecommendRequestError(
+                openai_error_message(response.status_code, api_message, site_language),
+                status=status,
+            )
+
+        content = response.json()["choices"][0]["message"]["content"]
+        return json.loads(content)
+
+    if last_error:
+        raise RecommendRequestError(
+            openai_error_message(0, "", site_language),
+            status=502,
+        ) from last_error
+    raise RecommendRequestError(
+        openai_error_message(429, "", site_language),
+        status=429,
+    )
+
+
+def parse_recommendations(ai_payload, catalog_by_id):
+    """Keep only recommendations whose ids exist in the catalog."""
+    raw_items = ai_payload.get("recommendations") or []
+    if not isinstance(raw_items, list):
+        return []
+
+    valid = []
+    seen = set()
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            movie_id = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if movie_id not in catalog_by_id or movie_id in seen:
+            continue
+
+        reason = (item.get("reason") or "").strip()
+        if not reason:
+            continue
+        if len(reason) > 280:
+            reason = reason[:279].rstrip() + "…"
+
+        movie = catalog_by_id[movie_id]
+        valid.append({
+            "id": movie_id,
+            "title": movie.get("title") or item.get("title") or "Untitled",
+            "reason": reason,
+        })
+        seen.add(movie_id)
+    return valid
+
+
+def supplement_recommendations(recommendations, candidates, catalog_by_id, site_language,
+                               target=3):
+    """Fill up to target picks from the catalog when the model returns too few valid ids."""
+    filled = list(recommendations)
+    seen = {rec["id"] for rec in filled}
+    filler = supplement_reason(site_language)
+    by_popularity = sorted(
+        candidates,
+        key=lambda entry: entry.get("popularity") or 0,
+        reverse=True,
+    )
+    for entry in by_popularity:
+        if len(filled) >= target:
+            break
+        movie_id = entry["id"]
+        if movie_id in seen:
+            continue
+        movie = catalog_by_id[movie_id]
+        filled.append({
+            "id": movie_id,
+            "title": movie.get("title") or "Untitled",
+            "reason": filler,
+        })
+        seen.add(movie_id)
+    return filled
+
+
+def enrich_recommendations(recommendations, catalog_by_id):
+    """Attach card fields from the catalog so the frontend can render links."""
+    enriched = []
+    for rec in recommendations:
+        movie = catalog_by_id.get(rec["id"]) or {}
+        enriched.append({
+            **rec,
+            "posterUrl": movie.get("posterUrl"),
+            "backdropUrl": movie.get("backdropUrl"),
+            "releaseDate": movie.get("releaseDate"),
+            "genres": movie.get("genres") or [],
+        })
+    return enriched
+
+
+# -----------------------------
 # HTTP request handling
 # -----------------------------
 
@@ -1059,6 +1639,109 @@ class AppHandler(BaseHTTPRequestHandler):
             # Any TMDb / network failure becomes a clean 502 for the frontend.
             self.send_json({"error": "Upstream TMDb request failed."}, status=502)
             print(f"  ! TMDb request failed: {error}")
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/recommend":
+            self.send_error(404, "Not found")
+            return
+
+        try:
+            self.handle_recommend()
+        except json.JSONDecodeError:
+            self.send_json({"error": "Invalid JSON body."}, status=400)
+        except ValueError as error:
+            self.send_json({"error": str(error)}, status=400)
+        except RecommendRequestError as error:
+            self.send_json({"error": error.message}, status=error.status)
+            print(f"  ! AI request failed: {error.message}")
+        except requests.RequestException as error:
+            self.send_json({"error": "AI service request failed."}, status=502)
+            print(f"  ! AI request failed: {error}")
+
+    def handle_recommend(self):
+        if not OPENAI_API_KEY:
+            self.send_json(
+                {"error": "AI recommendations are not configured."},
+                status=503,
+            )
+            return
+
+        body = read_json_body(self)
+        message = (body.get("message") or "").strip()
+        if not message:
+            self.send_json({"error": "Please describe what you are looking for."}, status=400)
+            return
+        if len(message) > MAX_RECOMMEND_MESSAGE:
+            self.send_json(
+                {"error": f"Message is too long (max {MAX_RECOMMEND_MESSAGE} characters)."},
+                status=400,
+            )
+            return
+
+        mode = normalize_mode(body.get("mode"))
+        site_language = body.get("siteLanguage") or "en"
+        if site_language not in SITE_LANGUAGE_MAP:
+            site_language = "en"
+
+        raw_movies = body.get("movies")
+        if not isinstance(raw_movies, list) or not raw_movies:
+            self.send_json({"error": "Catalog is empty. Load movies first."}, status=400)
+            return
+
+        candidates, catalog_by_id = build_recommend_candidates(
+            raw_movies, mode, message, site_language
+        )
+        if len(candidates) < 3:
+            self.send_json(
+                {"error": "Need at least 3 movies in the catalog for recommendations."},
+                status=400,
+            )
+            return
+
+        ai_payload = fetch_ai_recommendations(message, candidates, mode, site_language)
+        recommendations = parse_recommendations(ai_payload, catalog_by_id)
+
+        if len(recommendations) < 3:
+            valid_ids = [entry["id"] for entry in candidates]
+            retry_instruction = RECOMMEND_RETRY_INSTRUCTION.format(
+                ids=", ".join(str(i) for i in valid_ids)
+            )
+            print(
+                f"[recommend] retry valid={len(recommendations)} "
+                f"catalog={len(candidates)}",
+                flush=True,
+            )
+            ai_payload = fetch_ai_recommendations(
+                message, candidates, mode, site_language,
+                extra_instruction=retry_instruction,
+            )
+            recommendations = parse_recommendations(ai_payload, catalog_by_id)
+
+        notice = None
+        if len(recommendations) < 3:
+            recommendations = supplement_recommendations(
+                recommendations, candidates, catalog_by_id, site_language, target=3
+            )
+            if len(recommendations) >= 3:
+                notice = no_catalog_match_message(site_language)
+
+        if len(recommendations) < 3:
+            raise RecommendRequestError(
+                no_catalog_match_message(site_language),
+                status=422,
+            )
+
+        recommendations = enrich_recommendations(recommendations[:3], catalog_by_id)
+        print(
+            f"[recommend] mode={mode} catalog={len(candidates)} "
+            f"returned={len(recommendations)} siteLanguage={site_language}",
+            flush=True,
+        )
+        payload = {"recommendations": recommendations}
+        if notice:
+            payload["notice"] = notice
+        self.send_json(payload)
 
     def handle_upcoming(self, query):
         mode = normalize_mode(query.get("mode", [MODE_UPCOMING])[0])

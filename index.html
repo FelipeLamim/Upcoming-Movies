@@ -106,11 +106,61 @@
         <!-- Catalog: search, filters, sorting, and the full grid -->
         <section class="catalog" id="catalog">
             <header class="catalog-header">
-                <h2 class="section-heading" id="catalog-heading" data-i18n="browseAll">Browse all upcoming</h2>
-                <p class="subtitle" id="catalog-subtitle" data-i18n="subtitle">
-                    A curated selection of films arriving in theaters soon.
-                </p>
+                <div class="catalog-header__row">
+                    <div class="catalog-header__text">
+                        <h2 class="section-heading" id="catalog-heading" data-i18n="browseAll">Browse all upcoming</h2>
+                        <p class="subtitle" id="catalog-subtitle" data-i18n="subtitle">
+                            A curated selection of films arriving in theaters soon.
+                        </p>
+                    </div>
+                    <button type="button" class="ai-recommend__toggle" id="ai-recommend-toggle"
+                            aria-expanded="false" aria-controls="ai-recommend-panel">
+                        <svg class="ai-recommend__icon" viewBox="0 0 24 24" width="18" height="18"
+                             fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                            <path d="M12 3l1.4 4.3H18l-3.5 2.6 1.4 4.3L12 11.6 8.1 14.2l1.4-4.3L6 7.3h4.6L12 3z"
+                                  stroke-linejoin="round"/>
+                            <path d="M5 19h14" stroke-linecap="round"/>
+                        </svg>
+                        <span data-i18n="aiRecommendToggle">Recommendations from the AI</span>
+                    </button>
+                </div>
             </header>
+
+            <section class="ai-recommend" id="ai-recommend" aria-labelledby="ai-recommend-title">
+                <div class="ai-recommend__panel" id="ai-recommend-panel" hidden>
+                    <div class="ai-recommend__header">
+                        <h3 class="ai-recommend__title" id="ai-recommend-title" data-i18n="aiRecommendTitle">
+                            Find your next watch
+                        </h3>
+                        <p class="ai-recommend__hint" data-i18n="aiRecommendHint">
+                            Tell us what you like — we will pick from the current catalog only.
+                        </p>
+                    </div>
+
+                    <form class="ai-recommend__form" id="ai-recommend-form">
+                        <label class="ai-recommend__label" for="ai-recommend-input" data-i18n="aiRecommendLabel">
+                            Your preferences
+                        </label>
+                        <textarea id="ai-recommend-input" class="ai-recommend__input" rows="3"
+                                  maxlength="2000" data-i18n-placeholder="aiRecommendPlaceholder"
+                                  placeholder="What are you in the mood for?"></textarea>
+                        <div class="ai-recommend__actions">
+                            <button type="submit" class="ai-recommend__submit" id="ai-recommend-submit"
+                                    data-i18n="aiRecommendSubmit">Get recommendations</button>
+                        </div>
+                    </form>
+
+                    <div class="ai-recommend__status" id="ai-recommend-status" hidden></div>
+
+                    <div class="ai-recommend__results" id="ai-recommend-results" hidden>
+                        <p class="ai-recommend__notice" id="ai-recommend-notice" hidden></p>
+                        <h4 class="ai-recommend__results-title" data-i18n="aiRecommendResults">
+                            Picked for you
+                        </h4>
+                        <div class="ai-recommend__grid movie-list" id="ai-recommend-grid"></div>
+                    </div>
+                </div>
+            </section>
 
             <div class="controls">
                 <!-- Search: always visible (desktop + mobile) -->

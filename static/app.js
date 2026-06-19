@@ -66,6 +66,18 @@
             modeLabel: "Mode",
             langEn: "English",
             langPt: "Portuguese",
+            aiRecommendToggle: "Recommendations from the AI",
+            aiRecommendTitle: "Find your next watch",
+            aiRecommendHint: "Tell us what you like — we will pick from the current catalog only.",
+            aiRecommendLabel: "Your preferences",
+            aiRecommendPlaceholder: "What are you in the mood for?\n\nExamples:\n• I love Interstellar and Dune\n• A psychological thriller\n• Something fun with friends\n• Movies like Christopher Nolan's",
+            aiRecommendSubmit: "Get recommendations",
+            aiRecommendResults: "Picked for you",
+            aiRecommendLoading: "Finding matches in the catalog…",
+            aiRecommendError: "Could not get recommendations. Please try again.",
+            aiRecommendEmptyCatalog: "Load the catalog first, or widen your filters.",
+            aiRecommendTooFew: "Need at least 3 movies in the catalog for recommendations.",
+            aiRecommendReason: "Why this pick",
         },
         pt: {
             eyebrow: "Em breve nos cinemas",
@@ -126,6 +138,18 @@
             modeLabel: "Modo",
             langEn: "English",
             langPt: "Português",
+            aiRecommendToggle: "Recomendações da IA",
+            aiRecommendTitle: "Encontre seu próximo filme",
+            aiRecommendHint: "Conte o que você gosta — escolheremos apenas do catálogo atual.",
+            aiRecommendLabel: "Suas preferências",
+            aiRecommendPlaceholder: "No que você está a fim?\n\nExemplos:\n• Adoro Interestelar e Duna\n• Um thriller psicológico\n• Algo divertido para ver com amigos\n• Filmes no estilo do Christopher Nolan",
+            aiRecommendSubmit: "Obter recomendações",
+            aiRecommendResults: "Escolhidos para você",
+            aiRecommendLoading: "Buscando correspondências no catálogo…",
+            aiRecommendError: "Não foi possível obter recomendações. Tente novamente.",
+            aiRecommendEmptyCatalog: "Carregue o catálogo primeiro ou amplie seus filtros.",
+            aiRecommendTooFew: "São necessários pelo menos 3 filmes no catálogo para recomendar.",
+            aiRecommendReason: "Por que este filme",
         },
     };
 
@@ -206,6 +230,15 @@
         heroEyebrow: document.querySelector(".hero .eyebrow"),
         heroTitle: document.querySelector(".hero-title"),
         heroSubtitle: document.querySelector(".hero-sub"),
+        aiRecommendToggle: document.getElementById("ai-recommend-toggle"),
+        aiRecommendPanel: document.getElementById("ai-recommend-panel"),
+        aiRecommendForm: document.getElementById("ai-recommend-form"),
+        aiRecommendInput: document.getElementById("ai-recommend-input"),
+        aiRecommendSubmit: document.getElementById("ai-recommend-submit"),
+        aiRecommendStatus: document.getElementById("ai-recommend-status"),
+        aiRecommendResults: document.getElementById("ai-recommend-results"),
+        aiRecommendGrid: document.getElementById("ai-recommend-grid"),
+        aiRecommendNotice: document.getElementById("ai-recommend-notice"),
     };
 
     let siteLanguage = "en";
@@ -556,6 +589,9 @@
             }
         });
         els.search.placeholder = t("searchPlaceholder");
+        if (els.aiRecommendInput) {
+            els.aiRecommendInput.placeholder = t("aiRecommendPlaceholder");
+        }
         populateSelect(els.region, REGIONS);
         populateSelect(els.originalLanguage, LANGUAGES);
         populateGenreSelect();
@@ -694,6 +730,168 @@
             '<p class="overview">' + escapeHtml(movie.overview) + "</p>" +
             "</div></article></a>"
         );
+    }
+
+    function recommendationCardHtml(movie, reason) {
+        const poster = movie.posterUrl
+            ? '<img src="' + escapeHtml(movie.posterUrl) + '" alt="' +
+              escapeHtml(movie.title) + ' poster" loading="lazy">'
+            : "";
+        const href = movieDetailHref(movie);
+        const genres = (movie.genres && movie.genres.length)
+            ? '<p class="genres">' + escapeHtml(movie.genres.join(" • ")) + "</p>"
+            : "";
+        const backdropAttr = movie.backdropUrl
+            ? ' data-backdrop="' + escapeHtml(movie.backdropUrl) + '"'
+            : "";
+
+        return (
+            '<a class="card-link" href="' + href + '"' + backdropAttr + ">" +
+            '<article class="movie-card movie-card--recommend">' +
+            '<div class="poster">' + poster + "</div>" +
+            '<div class="movie-info">' +
+            '<p class="release-date">' +
+            escapeHtml(formatMovieDateLine(movie)) + "</p>" +
+            "<h2>" + escapeHtml(movie.title) + "</h2>" +
+            genres +
+            '<p class="recommend-reason"><span class="recommend-reason__label">' +
+            escapeHtml(t("aiRecommendReason")) + ":</span> " +
+            escapeHtml(reason) + "</p>" +
+            "</div></article></a>"
+        );
+    }
+
+    function compactCatalogForAi(movies) {
+        return movies.map(function (movie) {
+            return {
+                id: movie.id,
+                title: movie.title,
+                overview: movie.overview || "",
+                genres: movie.genres || [],
+                releaseDate: movie.releaseDate || "",
+                mode: getMode(),
+                popularity: movie.popularity || 0,
+            };
+        });
+    }
+
+    function setAiRecommendStatus(messageKey, isError) {
+        if (!els.aiRecommendStatus) return;
+        els.aiRecommendStatus.hidden = false;
+        els.aiRecommendStatus.textContent = t(messageKey);
+        els.aiRecommendStatus.classList.toggle("error", !!isError);
+        els.aiRecommendStatus.classList.toggle("is-loading", messageKey === "aiRecommendLoading");
+    }
+
+    function clearAiRecommendStatus() {
+        if (!els.aiRecommendStatus) return;
+        els.aiRecommendStatus.hidden = true;
+        els.aiRecommendStatus.textContent = "";
+        els.aiRecommendStatus.classList.remove("error", "is-loading");
+    }
+
+    function renderAiRecommendSkeletons() {
+        if (!els.aiRecommendGrid || !els.aiRecommendResults) return;
+        els.aiRecommendResults.hidden = false;
+        els.aiRecommendGrid.innerHTML = Array.from({ length: 3 }, function () {
+            return (
+                '<article class="movie-card skeleton">' +
+                '<div class="poster skeleton-box"></div>' +
+                '<div class="movie-info">' +
+                '<div class="skeleton-line skeleton-line--sm"></div>' +
+                '<div class="skeleton-line skeleton-line--lg"></div>' +
+                '<div class="skeleton-line"></div>' +
+                "</div></article>"
+            );
+        }).join("");
+    }
+
+    function renderAiRecommendations(recommendations, notice) {
+        if (!els.aiRecommendGrid || !els.aiRecommendResults) return;
+        if (els.aiRecommendNotice) {
+            if (notice) {
+                els.aiRecommendNotice.textContent = notice;
+                els.aiRecommendNotice.hidden = false;
+            } else {
+                els.aiRecommendNotice.textContent = "";
+                els.aiRecommendNotice.hidden = true;
+            }
+        }
+        els.aiRecommendGrid.innerHTML = recommendations.map(function (rec) {
+            return recommendationCardHtml(rec, rec.reason);
+        }).join("");
+        els.aiRecommendResults.hidden = false;
+        preloadBackdrops(recommendations);
+    }
+
+    function getRecommendationCatalog() {
+        return state.movies;
+    }
+
+    async function submitAiRecommendations(event) {
+        if (event) event.preventDefault();
+        if (!els.aiRecommendInput || !els.aiRecommendSubmit) return;
+
+        const message = els.aiRecommendInput.value.trim();
+        if (!message) {
+            els.aiRecommendInput.focus();
+            return;
+        }
+
+        const catalog = getRecommendationCatalog();
+        if (!catalog.length) {
+            setAiRecommendStatus("aiRecommendEmptyCatalog", true);
+            if (els.aiRecommendResults) els.aiRecommendResults.hidden = true;
+            return;
+        }
+        if (catalog.length < 3) {
+            setAiRecommendStatus("aiRecommendTooFew", true);
+            if (els.aiRecommendResults) els.aiRecommendResults.hidden = true;
+            return;
+        }
+
+        els.aiRecommendSubmit.disabled = true;
+        clearAiRecommendStatus();
+        setAiRecommendStatus("aiRecommendLoading", false);
+        renderAiRecommendSkeletons();
+
+        try {
+            const response = await fetch("/api/recommend", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    message: message,
+                    mode: getMode(),
+                    siteLanguage: siteLanguage,
+                    movies: compactCatalogForAi(catalog),
+                }),
+            });
+            const data = await response.json().catch(function () { return {}; });
+            if (!response.ok) {
+                throw new Error(data.error || t("aiRecommendError"));
+            }
+            clearAiRecommendStatus();
+            renderAiRecommendations(data.recommendations || [], data.notice || "");
+        } catch (error) {
+            setAiRecommendStatus("aiRecommendError", true);
+            if (els.aiRecommendResults) els.aiRecommendResults.hidden = true;
+            if (error && error.message && error.message !== t("aiRecommendError")) {
+                els.aiRecommendStatus.textContent = error.message;
+            }
+        } finally {
+            els.aiRecommendSubmit.disabled = false;
+        }
+    }
+
+    function toggleAiRecommendPanel() {
+        if (!els.aiRecommendPanel || !els.aiRecommendToggle) return;
+        const isOpen = !els.aiRecommendPanel.hidden;
+        els.aiRecommendPanel.hidden = isOpen;
+        els.aiRecommendToggle.setAttribute("aria-expanded", String(!isOpen));
+        if (!isOpen) {
+            els.aiRecommendPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            els.aiRecommendInput.focus();
+        }
     }
 
     // Sort a copy of the loaded movies by the current sort controls. Runs purely
@@ -1201,6 +1399,13 @@
     // Hero call-to-action and scroll hint both jump to the catalog.
     els.exploreCta.addEventListener("click", scrollToCatalog);
     els.heroScroll.addEventListener("click", scrollToCatalog);
+
+    if (els.aiRecommendToggle) {
+        els.aiRecommendToggle.addEventListener("click", toggleAiRecommendPanel);
+    }
+    if (els.aiRecommendForm) {
+        els.aiRecommendForm.addEventListener("submit", submitAiRecommendations);
+    }
 
     // Back/forward navigation: re-apply whatever state the URL now holds.
     window.addEventListener("popstate", function () {
