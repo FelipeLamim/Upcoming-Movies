@@ -251,15 +251,34 @@
 
     showStatus(dict.loading, false);
 
+    const region = (params.get("region") || "US").toUpperCase();
+    const listReleaseDate = params.get("listReleaseDate") || "";
+    const apiParams = new URLSearchParams({
+        siteLanguage: lang,
+        region: region,
+    });
+    if (listReleaseDate) {
+        apiParams.set("listReleaseDate", listReleaseDate);
+    }
+
     fetch("/api/movie/" + encodeURIComponent(movieId) +
-          "?siteLanguage=" + encodeURIComponent(lang))
+          "?" + apiParams.toString())
         .then(function (response) {
             if (!response.ok) throw new Error("Request failed: " + response.status);
             return response.json();
         })
         .then(function (movie) {
             render(movie);
-            console.log("Loaded movie:", movie.id, movie.title);
+            const meta = movie.releaseDateMeta;
+            if (meta) {
+                console.log("[release-date]", {
+                    movieId: movie.id,
+                    region: meta.region,
+                    listReleaseDate: meta.listReleaseDate || listReleaseDate || "n/a",
+                    detailReleaseDate: meta.detailReleaseDate,
+                    usedFallback: meta.usedFallback,
+                });
+            }
         })
         .catch(function (error) {
             console.error("Failed to load movie:", error);

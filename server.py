@@ -55,6 +55,7 @@ IMG_PROFILE_URL = "https://image.tmdb.org/t/p/w185"
 
 # Theatrical release types on TMDb: 2 = limited, 3 = wide.
 THEATRICAL_RELEASE_TYPES = "2|3"
+THEATRICAL_RELEASE_TYPE_IDS = {2, 3}
 
 # Map the two site languages to TMDb language codes.
 SITE_LANGUAGE_MAP = {"en": "en-US", "pt": "pt-BR"}
@@ -340,11 +341,44 @@ def group_crew(crew):
     return result
 
 
-def fetch_movie_detail(movie_id, site_language):
+def pick_regional_release_date(release_dates_payload, region, global_fallback):
+    """Pick the earliest theatrical release date for a region (types 2/3).
+
+    Matches the discover/upcoming list, which filters by region + theatrical types.
+    Falls back to the movie's global release_date when no regional theatrical date exists.
+    Returns (iso_date, used_fallback).
+    """
+    region = (region or "US").upper()
+    candidates = []
+
+    for entry in (release_dates_payload or {}).get("results") or []:
+        if (entry.get("iso_3166_1") or "").upper() != region:
+            continue
+        for rd in entry.get("release_dates") or []:
+            if rd.get("type") not in THEATRICAL_RELEASE_TYPE_IDS:
+                continue
+            raw = rd.get("release_date") or ""
+            if not raw:
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+                candidates.append(parsed)
+            except ValueError:
+                continue
+
+    if candidates:
+        return min(candidates).isoformat(), False
+
+    fallback = (global_fallback or "").strip()
+    return fallback, True
+
+
+def fetch_movie_detail(movie_id, site_language, region="US"):
     """Fetch and trim a single movie's details, credits, and videos (cached)."""
     tmdb_language = SITE_LANGUAGE_MAP.get(site_language, "en-US")
+    region = (region or "US").upper()
 
-    cache_key = (movie_id, tmdb_language)
+    cache_key = (movie_id, tmdb_language, region)
     now = time.time()
     cached = MOVIE_DETAIL_CACHE.get(cache_key)
     if cached and (now - cached[0]) < CACHE_TTL_SECONDS:
@@ -353,8 +387,14 @@ def fetch_movie_detail(movie_id, site_language):
     details = tmdb_get(
         f"/movie/{movie_id}",
         language=tmdb_language,
-        append_to_response="credits,videos",
+        append_to_response="credits,videos,release_dates",
     )
+
+    global_release = details.get("release_date") or ""
+    regional_release, used_fallback = pick_regional_release_date(
+        details.get("release_dates"), region, global_release
+    )
+    release_date = regional_release or global_release
 
     credits = details.get("credits") or {}
     cast = [
@@ -372,7 +412,13 @@ def fetch_movie_detail(movie_id, site_language):
         "title": details.get("title") or details.get("name") or "Untitled",
         "tagline": details.get("tagline") or "",
         "overview": details.get("overview") or "",
-        "releaseDate": details.get("release_date") or "",
+        "releaseDate": release_date,
+        "releaseDateMeta": {
+            "region": region,
+            "detailReleaseDate": release_date,
+            "globalReleaseDate": global_release,
+            "usedFallback": used_fallback,
+        },
         "runtime": details.get("runtime") or 0,
         "voteAverage": round(details.get("vote_average") or 0, 1),
         "genres": [g.get("name") for g in details.get("genres") or [] if g.get("name")],
@@ -552,11 +598,12 @@ def render_movie_page(query):
     template = (BASE_DIR / "movie.html").read_text(encoding="utf-8")
     raw_id = (query.get("id", [""])[0] or "").strip()
     site_language = query.get("siteLanguage", query.get("lang", ["en"]))[0] or "en"
+    region = (query.get("region", ["US"])[0] or "US").upper()
 
     meta = None
     if raw_id.isdigit():
         try:
-            movie = fetch_movie_detail(int(raw_id), site_language)
+            movie = fetch_movie_detail(int(raw_id), site_language, region)
             meta = build_movie_meta(movie)
         except requests.RequestException:
             meta = None
@@ -694,7 +741,23 @@ class AppHandler(BaseHTTPRequestHandler):
             return
 
         site_language = query.get("siteLanguage", ["en"])[0] or "en"
-        detail = fetch_movie_detail(movie_id, site_language)
+        region = (query.get("region", ["US"])[0] or "US").upper()
+        list_release_date = (query.get("listReleaseDate", [""])[0] or "").strip()
+
+        detail = fetch_movie_detail(movie_id, site_language, region)
+        if list_release_date:
+            detail["releaseDateMeta"]["listReleaseDate"] = list_release_date
+
+        meta = detail.get("releaseDateMeta") or {}
+        print(
+            "[release-date] "
+            f"id={movie_id} "
+            f"region={region} "
+            f"list={meta.get('listReleaseDate') or list_release_date or 'n/a'} "
+            f"detail={meta.get('detailReleaseDate', detail['releaseDate'])} "
+            f"fallback={meta.get('usedFallback', False)}",
+            flush=True,
+        )
         print(f"[movie] id={movie_id} siteLanguage={site_language} title={detail['title']!r}")
         self.send_json(detail)
 

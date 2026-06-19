@@ -423,6 +423,18 @@
             escapeHtml(meta.region) + "</span>";
     }
 
+    // Build a detail-page href that preserves filters and passes the list date
+    // so the backend can log/compare homepage vs detail release dates.
+    function movieDetailHref(movie) {
+        const qs = lastQuery ? new URLSearchParams(lastQuery) : new URLSearchParams();
+        if (movie.releaseDate) {
+            qs.set("listReleaseDate", movie.releaseDate);
+        }
+        const query = qs.toString();
+        return "movie.html?id=" + encodeURIComponent(movie.id) +
+            (query ? "&" + query : "");
+    }
+
     function cardHtml(movie) {
         const poster = movie.posterUrl
             ? '<img src="' + escapeHtml(movie.posterUrl) + '" alt="' +
@@ -430,8 +442,7 @@
             : "";
         // Carry the full homepage state to the detail page so "Back to results"
         // can return here with the same filters applied.
-        const href = "movie.html?id=" + encodeURIComponent(movie.id) +
-            (lastQuery ? "&" + lastQuery : "");
+        const href = movieDetailHref(movie);
         const genres = (movie.genres && movie.genres.length)
             ? '<p class="genres">' + escapeHtml(movie.genres.join(" • ")) + "</p>"
             : "";
@@ -524,8 +535,7 @@
 
     function featuredHtml(movie) {
         const media = movie.backdropUrl || movie.posterUrl || "";
-        const href = "movie.html?id=" + encodeURIComponent(movie.id) +
-            (lastQuery ? "&" + lastQuery : "");
+        const href = movieDetailHref(movie);
         return (
             '<div class="featured-card">' +
             '<div class="featured-media" style="background-image:url(\'' +
