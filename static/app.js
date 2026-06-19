@@ -304,6 +304,21 @@
         els.sortOrder.value = defaults.sortOrder;
     }
 
+    function resetFiltersToDefaults(options) {
+        options = options || {};
+        els.search.value = DEFAULTS.search;
+        els.region.value = DEFAULTS.region;
+        els.originalLanguage.value = DEFAULTS.filmLanguage === "any" ? "" : DEFAULTS.filmLanguage;
+        els.genre.value = DEFAULTS.genre === "any" ? "" : DEFAULTS.genre;
+        els.daysAhead.value = DEFAULTS.daysAhead;
+        if (!options.keepSiteLanguage) {
+            syncSiteLanguage(DEFAULTS.siteLanguage);
+            applyTranslations();
+        } else {
+            updateFilterSummary();
+        }
+    }
+
     function readStateFromUrl() {
         const p = new URLSearchParams(window.location.search);
         if (Array.from(p.keys()).length === 0) return null;
@@ -1102,15 +1117,7 @@
     // Reset the drawer's filters back to defaults (search stays — it lives
     // outside the drawer), then refetch. Drawer stays open to show the result.
     function resetDrawer() {
-        const previousLang = siteLanguage;
-        syncSiteLanguage(DEFAULTS.siteLanguage);
-        if (DEFAULTS.siteLanguage !== previousLang) {
-            applyTranslations();
-        }
-        els.region.value = DEFAULTS.region;
-        els.originalLanguage.value = DEFAULTS.filmLanguage === "any" ? "" : DEFAULTS.filmLanguage;
-        els.genre.value = DEFAULTS.genre === "any" ? "" : DEFAULTS.genre;
-        els.daysAhead.value = DEFAULTS.daysAhead;
+        resetFiltersToDefaults();
         applyModeSortDefaults();
         loadMovies();
     }
@@ -1132,6 +1139,7 @@
         btn.addEventListener("click", function () {
             if (btn.classList.contains("is-active")) return;
             setMode(btn.dataset.mode);
+            resetFiltersToDefaults({ keepSiteLanguage: true });
             applyModeSortDefaults();
             loadMovies();
         });
