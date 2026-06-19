@@ -13,7 +13,8 @@
             brandAccent: "Movies",
             subtitle: "A curated selection of films arriving in theaters soon.",
             heroEyebrow: "In theaters soon",
-            heroTitle: "Find out which movies are coming next.",
+            siteName: "Movie Horizon",
+            heroTitle: "Discover what's coming next.",
             heroSubtitle: "Discover upcoming theatrical releases — trailers, cast, and crew, all in one place.",
             cta: "Explore Upcoming Movies",
             featuredLabel: "Featured Release",
@@ -54,7 +55,8 @@
             brandAccent: "em Breve",
             subtitle: "Uma seleção de filmes que chegam aos cinemas em breve.",
             heroEyebrow: "Em breve nos cinemas",
-            heroTitle: "Descubra quais filmes chegam a seguir.",
+            siteName: "Movie Horizon",
+            heroTitle: "Descubra o que vem a seguir.",
             heroSubtitle: "Conheça os próximos lançamentos nos cinemas — trailers, elenco e equipe, tudo em um só lugar.",
             cta: "Explorar próximos filmes",
             featuredLabel: "Destaque",
@@ -354,8 +356,9 @@
         els.search.placeholder = t("searchPlaceholder");
         populateSelect(els.region, REGIONS);
         populateSelect(els.originalLanguage, LANGUAGES);
-        document.title = t("brand") + " " + t("brandAccent");
         els.drawerClose.setAttribute("aria-label", t("close"));
+        // Keep the SEO-friendly home title regardless of UI language.
+        document.title = "Movie Horizon | Discover Upcoming Movies Worldwide";
         updateFilterSummary();
     }
 

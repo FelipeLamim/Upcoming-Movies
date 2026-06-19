@@ -3,7 +3,44 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Upcoming Movies</title>
+    <title>Movie Horizon | Discover Upcoming Movies Worldwide</title>
+    <meta name="description" content="Discover upcoming movies worldwide, including release dates, trailers, cast information, and the most anticipated films coming soon to theaters.">
+    <link rel="canonical" href="https://movie-horizon.com/">
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Movie Horizon">
+    <meta property="og:title" content="Movie Horizon | Discover Upcoming Movies Worldwide">
+    <meta property="og:description" content="Discover upcoming movies worldwide, including release dates, trailers, cast information, and the most anticipated films coming soon to theaters.">
+    <meta property="og:url" content="https://movie-horizon.com/">
+    <meta property="og:image" content="https://movie-horizon.com/static/og-image.svg">
+
+    <!-- Twitter / X -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Movie Horizon | Discover Upcoming Movies Worldwide">
+    <meta name="twitter:description" content="Discover upcoming movies worldwide, including release dates, trailers, cast information, and the most anticipated films coming soon to theaters.">
+    <meta name="twitter:image" content="https://movie-horizon.com/static/og-image.svg">
+
+    <!-- Structured data: WebSite -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "Movie Horizon",
+        "alternateName": "Movie Horizon — Upcoming Movies",
+        "url": "https://movie-horizon.com/",
+        "description": "Discover upcoming movies worldwide, including release dates, trailers, cast information, and the most anticipated films coming soon to theaters.",
+        "potentialAction": {
+            "@type": "SearchAction",
+            "target": {
+                "@type": "EntryPoint",
+                "urlTemplate": "https://movie-horizon.com/?search={search_term_string}"
+            },
+            "query-input": "required name=search_term_string"
+        }
+    }
+    </script>
+
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -22,8 +59,9 @@
         <div class="hero-bg" id="hero-bg"></div>
         <div class="hero-overlay"></div>
         <div class="hero-content">
+            <p class="hero-brand" data-i18n="siteName">Movie Horizon</p>
+            <h1 class="hero-title" data-i18n="heroTitle">Discover what's coming next.</h1>
             <p class="eyebrow" data-i18n="heroEyebrow">In theaters soon</p>
-            <h1 class="hero-title" data-i18n="heroTitle">Find out which movies are coming next.</h1>
             <p class="hero-sub" data-i18n="heroSubtitle">
                 Discover upcoming theatrical releases — trailers, cast, and crew, all in one place.
             </p>

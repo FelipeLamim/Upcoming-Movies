@@ -169,7 +169,9 @@
     }
 
     function render(movie) {
-        document.title = movie.title + " — Upcoming Movies";
+        // SEO meta + JSON-LD are rendered server-side (see server.py) so scrapers
+        // without JS still get them; here we just keep the tab title in sync.
+        document.title = movie.title + " | Movie Horizon";
 
         const poster = movie.posterUrl
             ? '<img src="' + escapeHtml(movie.posterUrl) + '" alt="' +

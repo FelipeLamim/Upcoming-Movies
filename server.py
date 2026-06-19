@@ -44,6 +44,10 @@ if not TMDB_API_KEY:
         "my-upcoming-films/.env.local like this:\nTMDB_API_KEY=your_api_key_here"
     )
 
+# Public site origin used for canonical URLs, sitemap, robots, and social tags.
+# Override with SITE_URL env var if the domain changes.
+SITE_URL = os.getenv("SITE_URL", "https://movie-horizon.com").rstrip("/")
+
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 IMG_POSTER_URL = "https://image.tmdb.org/t/p/w500"
 IMG_BACKDROP_URL = "https://image.tmdb.org/t/p/w1280"
@@ -67,6 +71,8 @@ MAX_PAGES = 15
 # underlying TMDb data (region, language, original language, days ahead).
 # Sorting/search are applied on top, so they don't need their own cache entries.
 UPCOMING_CACHE = {}
+# Per-movie detail cache, keyed by (movie_id, tmdb_language).
+MOVIE_DETAIL_CACHE = {}
 CACHE_TTL_SECONDS = 15 * 60  # 15 minutes (within the 10–30 min target)
 
 # Date window bounds requested by the product spec.
@@ -335,8 +341,15 @@ def group_crew(crew):
 
 
 def fetch_movie_detail(movie_id, site_language):
-    """Fetch and trim a single movie's details, credits, and videos."""
+    """Fetch and trim a single movie's details, credits, and videos (cached)."""
     tmdb_language = SITE_LANGUAGE_MAP.get(site_language, "en-US")
+
+    cache_key = (movie_id, tmdb_language)
+    now = time.time()
+    cached = MOVIE_DETAIL_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < CACHE_TTL_SECONDS:
+        return cached[1]
+
     details = tmdb_get(
         f"/movie/{movie_id}",
         language=tmdb_language,
@@ -354,7 +367,7 @@ def fetch_movie_detail(movie_id, site_language):
         if person.get("name")
     ]
 
-    return {
+    result = {
         "id": details.get("id"),
         "title": details.get("title") or details.get("name") or "Untitled",
         "tagline": details.get("tagline") or "",
@@ -370,6 +383,188 @@ def fetch_movie_detail(movie_id, site_language):
         "crew": group_crew(credits.get("crew")),
     }
 
+    MOVIE_DETAIL_CACHE[cache_key] = (now, result)
+    return result
+
+
+# -----------------------------
+# SEO: robots.txt + sitemap.xml
+# -----------------------------
+
+def build_robots():
+    """Allow all crawlers and point them at the sitemap."""
+    return (
+        "User-agent: *\n"
+        "Allow: /\n\n"
+        f"Sitemap: {SITE_URL}/sitemap.xml\n"
+    )
+
+
+def _xml_escape(value):
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def build_sitemap():
+    """Generate a sitemap with the homepage + every current catalog movie URL."""
+    urls = [SITE_URL + "/"]
+    try:
+        # Use the broadest default window so the sitemap covers the full catalog.
+        data = get_filtered_movies("US", "en", "", MAX_DAYS_AHEAD)
+        for movie in data["filtered"]:
+            movie_id = movie.get("id")
+            if movie_id:
+                urls.append(f"{SITE_URL}/movie?id={movie_id}")
+    except requests.RequestException:
+        # If TMDb is unreachable, still return a valid sitemap with the homepage.
+        pass
+
+    body = "".join(
+        "<url><loc>" + _xml_escape(url) + "</loc></url>" for url in urls
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        + body +
+        "</urlset>\n"
+    )
+
+
+# -----------------------------
+# SEO: server-rendered <head> meta for movie pages
+# -----------------------------
+# Social scrapers (WhatsApp, Discord, Facebook, X, LinkedIn) and many crawlers do
+# not run JavaScript, so movie meta tags must be present in the initial HTML.
+
+HOME_DESCRIPTION = (
+    "Discover upcoming movies worldwide, including release dates, trailers, cast "
+    "information, and the most anticipated films coming soon to theaters."
+)
+
+
+def _attr(value):
+    """Escape a string for safe use inside an HTML attribute value."""
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _meta_tags(title, description, url, image, og_type, json_ld=None):
+    """Assemble the shared <title> + description + OG + Twitter + JSON-LD block."""
+    parts = [
+        f"<title>{_attr(title)}</title>",
+        f'<meta name="description" content="{_attr(description)}">',
+        f'<link rel="canonical" href="{_attr(url)}">',
+        '<meta property="og:site_name" content="Movie Horizon">',
+        f'<meta property="og:type" content="{_attr(og_type)}">',
+        f'<meta property="og:title" content="{_attr(title)}">',
+        f'<meta property="og:description" content="{_attr(description)}">',
+        f'<meta property="og:url" content="{_attr(url)}">',
+        f'<meta property="og:image" content="{_attr(image)}">',
+        '<meta name="twitter:card" content="summary_large_image">',
+        f'<meta name="twitter:title" content="{_attr(title)}">',
+        f'<meta name="twitter:description" content="{_attr(description)}">',
+        f'<meta name="twitter:image" content="{_attr(image)}">',
+    ]
+    if json_ld is not None:
+        parts.append(
+            '<script type="application/ld+json">'
+            + json.dumps(json_ld, ensure_ascii=False)
+            + "</script>"
+        )
+    return "\n    ".join(parts)
+
+
+def build_movie_meta(movie):
+    """Server-rendered head meta + Movie JSON-LD for a single movie."""
+    movie_id = movie.get("id")
+    title = movie.get("title") or "Movie"
+    full_title = f"{title} | Movie Horizon"
+    overview = (movie.get("overview") or "").strip()
+    description = overview
+    if len(description) > 300:
+        description = description[:299].rstrip() + "…"
+    if not description:
+        description = f"Release details, trailer, and cast for {title} on Movie Horizon."
+    image = (
+        movie.get("backdropUrl")
+        or movie.get("posterUrl")
+        or f"{SITE_URL}/static/og-image.svg"
+    )
+    url = f"{SITE_URL}/movie?id={movie_id}"
+
+    json_ld = {
+        "@context": "https://schema.org",
+        "@type": "Movie",
+        "name": title,
+        "url": url,
+    }
+    if overview:
+        json_ld["description"] = overview
+    if image:
+        json_ld["image"] = image
+    if movie.get("releaseDate"):
+        json_ld["datePublished"] = movie["releaseDate"]
+    if movie.get("genres"):
+        json_ld["genre"] = movie["genres"]
+    runtime = movie.get("runtime") or 0
+    if runtime:
+        hours, minutes = divmod(runtime, 60)
+        json_ld["duration"] = "PT" + (f"{hours}H" if hours else "") + (f"{minutes}M" if minutes else "")
+    if movie.get("cast"):
+        json_ld["actor"] = [
+            {"@type": "Person", "name": p["name"]}
+            for p in movie["cast"][:10] if p.get("name")
+        ]
+    for group in movie.get("crew") or []:
+        if group.get("role") == "Director" and group.get("names"):
+            json_ld["director"] = [
+                {"@type": "Person", "name": n} for n in group["names"]
+            ]
+            break
+
+    return _meta_tags(full_title, description, url, image, "video.movie", json_ld)
+
+
+def build_default_movie_meta():
+    """Fallback meta for the movie page when no/invalid id is supplied."""
+    return _meta_tags(
+        "Movie Horizon | Discover Upcoming Movies Worldwide",
+        HOME_DESCRIPTION,
+        SITE_URL + "/",
+        SITE_URL + "/static/og-image.svg",
+        "website",
+    )
+
+
+def render_movie_page(query):
+    """Read movie.html and inject server-rendered SEO meta into the <head>."""
+    template = (BASE_DIR / "movie.html").read_text(encoding="utf-8")
+    raw_id = (query.get("id", [""])[0] or "").strip()
+    site_language = query.get("siteLanguage", query.get("lang", ["en"]))[0] or "en"
+
+    meta = None
+    if raw_id.isdigit():
+        try:
+            movie = fetch_movie_detail(int(raw_id), site_language)
+            meta = build_movie_meta(movie)
+        except requests.RequestException:
+            meta = None
+    if meta is None:
+        meta = build_default_movie_meta()
+
+    return template.replace("<!-- SEO_META -->", meta)
+
 
 # -----------------------------
 # HTTP request handling
@@ -384,6 +579,14 @@ class AppHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_text(self, text, content_type, status=200):
+        body = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -425,8 +628,14 @@ class AppHandler(BaseHTTPRequestHandler):
         try:
             if path in ("/", "/index.html"):
                 self.send_static("index.html")
-            elif path == "/movie.html":
-                self.send_static("movie.html")
+            elif path in ("/movie", "/movie.html"):
+                # /movie is the canonical, extension-less detail URL. Meta tags are
+                # rendered server-side so social scrapers (no JS) get rich previews.
+                self.send_text(render_movie_page(query), "text/html; charset=utf-8")
+            elif path == "/robots.txt":
+                self.send_text(build_robots(), "text/plain; charset=utf-8")
+            elif path == "/sitemap.xml":
+                self.send_text(build_sitemap(), "application/xml; charset=utf-8")
             elif path.startswith("/static/"):
                 self.send_static(path[len("/static/"):])
             elif path == "/api/upcoming-movies":
