@@ -59,8 +59,28 @@
         <div class="hero-bg" id="hero-bg"></div>
         <div class="hero-overlay"></div>
         <div class="hero-content">
-            <p class="hero-brand" data-i18n="siteName">Movie Horizon</p>
-            <h1 class="hero-title" data-i18n="heroTitle">Discover what's coming next.</h1>
+            <div class="hero-top">
+                <p class="hero-brand" data-i18n="siteName">Movie Horizon</p>
+                <div class="lang-toggle" role="group" aria-label="Site language">
+                    <button type="button" class="lang-toggle__btn is-active" data-lang="en"
+                            aria-pressed="true">EN</button>
+                    <button type="button" class="lang-toggle__btn" data-lang="pt"
+                            aria-pressed="false">PT</button>
+                </div>
+            </div>
+
+            <div class="mode-toggle mode-toggle--hero" role="tablist" aria-label="Browse mode">
+                <button type="button" class="mode-toggle__btn is-active" role="tab"
+                        data-mode="upcoming" aria-selected="true" data-i18n="modeUpcoming">
+                    Upcoming Movies
+                </button>
+                <button type="button" class="mode-toggle__btn" role="tab"
+                        data-mode="nowPlaying" aria-selected="false" data-i18n="modeNowPlaying">
+                    Now in Theaters
+                </button>
+            </div>
+
+            <h1 class="hero-title" data-i18n="heroTitle">Discover what's coming next — and what's in theaters now.</h1>
             <p class="eyebrow" data-i18n="heroEyebrow">In theaters soon</p>
             <p class="hero-sub" data-i18n="heroSubtitle">
                 Discover upcoming theatrical releases — trailers, cast, and crew, all in one place.
@@ -79,15 +99,15 @@
 
         <!-- Most anticipated -->
         <section class="anticipated" id="anticipated-section" hidden>
-            <h2 class="section-heading" data-i18n="mostAnticipated">Most Anticipated</h2>
+            <h2 class="section-heading" id="anticipated-heading" data-i18n="mostAnticipated">Most Anticipated</h2>
             <div class="anticipated-grid" id="anticipated-grid"></div>
         </section>
 
         <!-- Catalog: search, filters, sorting, and the full grid -->
         <section class="catalog" id="catalog">
             <header class="catalog-header">
-                <h2 class="section-heading" data-i18n="browseAll">Browse all upcoming</h2>
-                <p class="subtitle" data-i18n="subtitle">
+                <h2 class="section-heading" id="catalog-heading" data-i18n="browseAll">Browse all upcoming</h2>
+                <p class="subtitle" id="catalog-subtitle" data-i18n="subtitle">
                     A curated selection of films arriving in theaters soon.
                 </p>
             </header>
@@ -134,8 +154,7 @@
                     </div>
 
                     <div class="drawer-body">
-                        <!-- Discovery filters -->
-                        <div class="control-row">
+                        <div class="control-row control-row--filters">
                             <label class="control">
                                 <span data-i18n="region">Region</span>
                                 <select id="region"></select>
@@ -144,21 +163,10 @@
                                 <span data-i18n="originalLanguage">Film language</span>
                                 <select id="original-language"></select>
                             </label>
-                            <label class="control">
+                            <label class="control control--days-ahead" id="days-ahead-control">
                                 <span data-i18n="daysAhead">Days ahead</span>
                                 <input type="number" id="days-ahead" min="1" max="365" step="1" value="60">
                             </label>
-                            <label class="control">
-                                <span data-i18n="siteLanguage">Website language</span>
-                                <select id="site-language">
-                                    <option value="en">English</option>
-                                    <option value="pt">Português</option>
-                                </select>
-                            </label>
-                        </div>
-
-                        <!-- Sorting -->
-                        <div class="control-row control-row--sort">
                             <label class="control">
                                 <span data-i18n="sortBy">Sort by</span>
                                 <select id="sort-field">

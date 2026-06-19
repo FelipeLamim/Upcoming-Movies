@@ -14,7 +14,7 @@
             subtitle: "A curated selection of films arriving in theaters soon.",
             heroEyebrow: "In theaters soon",
             siteName: "Movie Horizon",
-            heroTitle: "Discover what's coming next.",
+            heroTitle: "Discover what's coming next — and what's in theaters now.",
             heroSubtitle: "Discover upcoming theatrical releases — trailers, cast, and crew, all in one place.",
             cta: "Explore Upcoming Movies",
             featuredLabel: "Featured Release",
@@ -48,6 +48,22 @@
             empty: "No movies match these filters.",
             error: "Could not load movies. Please try again.",
             footer: "Data from The Movie Database (TMDb).",
+            modeUpcoming: "Upcoming Movies",
+            modeNowPlaying: "Now in Theaters",
+            heroEyebrowNow: "Now in theaters",
+            heroTitleNow: "See what's playing today.",
+            heroSubtitleNow: "Browse films currently in theaters — trailers, cast, and crew, all in one place.",
+            ctaNow: "Explore Now Playing",
+            featuredLabelNow: "Now Showing",
+            mostAnticipatedNow: "Popular in Theaters",
+            browseAllNow: "Browse all now playing",
+            inTheatersSince: "In theaters since",
+            windowNow: "Last 60 days",
+            loadingNow: "Loading now playing…",
+            emptyNowPlaying: "No movies currently in theaters match these filters.",
+            modeLabel: "Mode",
+            langEn: "English",
+            langPt: "Portuguese",
         },
         pt: {
             eyebrow: "Em breve nos cinemas",
@@ -56,7 +72,7 @@
             subtitle: "Uma seleção de filmes que chegam aos cinemas em breve.",
             heroEyebrow: "Em breve nos cinemas",
             siteName: "Movie Horizon",
-            heroTitle: "Descubra o que vem a seguir.",
+            heroTitle: "Descubra o que vem a seguir — e o que está nos cinemas agora.",
             heroSubtitle: "Conheça os próximos lançamentos nos cinemas — trailers, elenco e equipe, tudo em um só lugar.",
             cta: "Explorar próximos filmes",
             featuredLabel: "Destaque",
@@ -90,6 +106,22 @@
             empty: "Nenhum filme corresponde a estes filtros.",
             error: "Não foi possível carregar os filmes. Tente novamente.",
             footer: "Dados do The Movie Database (TMDb).",
+            modeUpcoming: "Próximos filmes",
+            modeNowPlaying: "Nos cinemas",
+            heroEyebrowNow: "Nos cinemas agora",
+            heroTitleNow: "Veja o que está em cartaz hoje.",
+            heroSubtitleNow: "Explore filmes em exibição nos cinemas — trailers, elenco e equipe, tudo em um só lugar.",
+            ctaNow: "Explorar em cartaz",
+            featuredLabelNow: "Em cartaz",
+            mostAnticipatedNow: "Populares nos cinemas",
+            browseAllNow: "Ver todos em cartaz",
+            inTheatersSince: "Nos cinemas desde",
+            windowNow: "Últimos 60 dias",
+            loadingNow: "Carregando em cartaz…",
+            emptyNowPlaying: "Nenhum filme em cartaz corresponde a estes filtros.",
+            modeLabel: "Modo",
+            langEn: "English",
+            langPt: "Português",
         },
     };
 
@@ -132,7 +164,6 @@
         region: document.getElementById("region"),
         originalLanguage: document.getElementById("original-language"),
         daysAhead: document.getElementById("days-ahead"),
-        siteLanguage: document.getElementById("site-language"),
         sortField: document.getElementById("sort-field"),
         sortOrder: document.getElementById("sort-order"),
         list: document.getElementById("movie-list"),
@@ -160,6 +191,16 @@
         drawerClose: document.getElementById("drawer-close"),
         drawerApply: document.getElementById("drawer-apply"),
         drawerReset: document.getElementById("drawer-reset"),
+        langButtons: document.querySelectorAll(".lang-toggle__btn"),
+        modeToggle: document.querySelector(".mode-toggle"),
+        modeButtons: document.querySelectorAll(".mode-toggle__btn"),
+        catalogHeading: document.getElementById("catalog-heading"),
+        catalogSubtitle: document.getElementById("catalog-subtitle"),
+        anticipatedHeading: document.getElementById("anticipated-heading"),
+        daysAheadControl: document.getElementById("days-ahead-control"),
+        heroEyebrow: document.querySelector(".hero .eyebrow"),
+        heroTitle: document.querySelector(".hero-title"),
+        heroSubtitle: document.querySelector(".hero-sub"),
     };
 
     let siteLanguage = "en";
@@ -185,6 +226,7 @@
 
     const STORAGE_KEY = "upcomingMoviesFilters";
     const DEFAULTS = {
+        mode: "upcoming",
         search: "",
         region: "US",
         filmLanguage: "any",
@@ -198,17 +240,76 @@
     // Card links and the detail "Back to results" link reuse it.
     let lastQuery = "";
 
+    function getDefaultSort(mode) {
+        return {
+            sortBy: "release",
+            sortOrder: mode === "nowPlaying" ? "desc" : "asc",
+        };
+    }
+
+    function getMode() {
+        const active = document.querySelector(".mode-toggle__btn.is-active");
+        return active ? active.dataset.mode : DEFAULTS.mode;
+    }
+
+    function isNowPlaying() {
+        return getMode() === "nowPlaying";
+    }
+
+    function setMode(mode) {
+        els.modeButtons.forEach(function (btn) {
+            const active = btn.dataset.mode === mode;
+            btn.classList.toggle("is-active", active);
+            btn.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        applyModeUI();
+    }
+
+    function applyModeUI() {
+        const now = isNowPlaying();
+        if (els.daysAheadControl) {
+            els.daysAheadControl.classList.toggle("is-hidden", now);
+        }
+        if (els.heroEyebrow) {
+            els.heroEyebrow.textContent = t(now ? "heroEyebrowNow" : "heroEyebrow");
+        }
+        if (els.heroSubtitle) {
+            els.heroSubtitle.textContent = t(now ? "heroSubtitleNow" : "heroSubtitle");
+        }
+        if (els.exploreCta) {
+            els.exploreCta.textContent = t(now ? "ctaNow" : "cta");
+        }
+        if (els.catalogHeading) {
+            els.catalogHeading.textContent = t(now ? "browseAllNow" : "browseAll");
+        }
+        if (els.catalogSubtitle) {
+            els.catalogSubtitle.textContent = t(now ? "heroSubtitleNow" : "subtitle");
+        }
+        if (els.anticipatedHeading) {
+            els.anticipatedHeading.textContent = t(now ? "mostAnticipatedNow" : "mostAnticipated");
+        }
+    }
+
+    function applyModeSortDefaults() {
+        const defaults = getDefaultSort(getMode());
+        els.sortField.value = defaults.sortBy;
+        els.sortOrder.value = defaults.sortOrder;
+    }
+
     function readStateFromUrl() {
         const p = new URLSearchParams(window.location.search);
         if (Array.from(p.keys()).length === 0) return null;
+        const mode = p.get("mode") || DEFAULTS.mode;
+        const sortDefaults = getDefaultSort(mode);
         return {
+            mode: mode,
             search: p.get("search") || "",
             region: p.get("region") || DEFAULTS.region,
             filmLanguage: p.get("filmLanguage") || DEFAULTS.filmLanguage,
             daysAhead: p.get("daysAhead") || DEFAULTS.daysAhead,
             siteLanguage: p.get("siteLanguage") || DEFAULTS.siteLanguage,
-            sortBy: p.get("sortBy") || DEFAULTS.sortBy,
-            sortOrder: p.get("sortOrder") || DEFAULTS.sortOrder,
+            sortBy: p.has("sortBy") ? p.get("sortBy") : sortDefaults.sortBy,
+            sortOrder: p.has("sortOrder") ? p.get("sortOrder") : sortDefaults.sortOrder,
         };
     }
 
@@ -223,26 +324,31 @@
     // Read the current values straight from the controls.
     function currentState() {
         return {
+            mode: getMode(),
             search: els.search.value.trim(),
             region: els.region.value || DEFAULTS.region,
             filmLanguage: els.originalLanguage.value === "" ? "any" : els.originalLanguage.value,
             daysAhead: String(els.daysAhead.value || DEFAULTS.daysAhead),
-            siteLanguage: els.siteLanguage.value || DEFAULTS.siteLanguage,
+            siteLanguage: siteLanguage || DEFAULTS.siteLanguage,
             sortBy: els.sortField.value || DEFAULTS.sortBy,
             sortOrder: els.sortOrder.value || DEFAULTS.sortOrder,
         };
     }
 
     function stateToQuery(st) {
-        return new URLSearchParams({
+        const params = {
+            mode: st.mode || DEFAULTS.mode,
             search: st.search,
             region: st.region,
             filmLanguage: st.filmLanguage,
-            daysAhead: st.daysAhead,
             siteLanguage: st.siteLanguage,
             sortBy: st.sortBy,
             sortOrder: st.sortOrder,
-        }).toString();
+        };
+        if (params.mode === "upcoming") {
+            params.daysAhead = st.daysAhead;
+        }
+        return new URLSearchParams(params).toString();
     }
 
     // Persist the state to the URL (without adding history entries) and storage.
@@ -256,12 +362,21 @@
         updateFilterSummary();
     }
 
+    function syncSiteLanguage(lang) {
+        siteLanguage = lang === "pt" ? "pt" : "en";
+        els.langButtons.forEach(function (btn) {
+            const active = btn.dataset.lang === siteLanguage;
+            btn.classList.toggle("is-active", active);
+            btn.setAttribute("aria-pressed", active ? "true" : "false");
+        });
+    }
+
     // Push the given state onto the controls. siteLanguage is applied first so
     // the language-dependent selects are repopulated before we set their values.
     function applyState(st) {
-        els.siteLanguage.value = st.siteLanguage;
-        siteLanguage = st.siteLanguage;
+        syncSiteLanguage(st.siteLanguage);
         applyTranslations();
+        setMode(st.mode || DEFAULTS.mode);
         els.region.value = st.region;
         els.originalLanguage.value = st.filmLanguage === "any" ? "" : st.filmLanguage;
         els.daysAhead.value = st.daysAhead;
@@ -289,6 +404,15 @@
             month: "short",
             day: "numeric",
         });
+    }
+
+    function formatMovieDateLine(movie) {
+        const formatted = formatReleaseDate(movie.releaseDate, siteLanguage);
+        if (!formatted) return "";
+        if (isNowPlaying()) {
+            return t("inTheatersSince") + " " + formatted;
+        }
+        return "\u{1F4C5} " + formatted;
     }
 
     function escapeHtml(value) {
@@ -362,6 +486,7 @@
         // Keep the SEO-friendly home title regardless of UI language.
         document.title = "Movie Horizon | Discover Upcoming Movies Worldwide";
         updateFilterSummary();
+        applyModeUI();
     }
 
     // Compact "US • English • 365d" summary shown on the mobile Filters button.
@@ -372,8 +497,11 @@
             ? langSelect.options[langSelect.selectedIndex].text
             : "";
         const days = normalizeDaysAhead();
-        els.filtersSummary.textContent =
-            [region, langLabel, days + "d"].filter(Boolean).join(" • ");
+        const parts = [region, langLabel];
+        if (!isNowPlaying()) {
+            parts.push(days + "d");
+        }
+        els.filtersSummary.textContent = parts.filter(Boolean).join(" • ");
     }
 
     // ---- Backdrop hover effect (crossfading layers) ----------------------
@@ -437,19 +565,10 @@
     // ---- Rendering -------------------------------------------------------
 
     function renderMeta(displayedCount) {
-        const meta = state.meta;
-        if (!meta) return;
-        const windowLabel =
-            formatReleaseDate(meta.windowStart, siteLanguage) +
-            " – " +
-            formatReleaseDate(meta.windowEnd, siteLanguage);
+        if (!state.meta) return;
         els.metaRow.innerHTML =
             '<span class="chip"><span>' + t("showing") + "</span> " +
-            displayedCount + " " + t("films") + "</span>" +
-            '<span class="chip"><span>' + t("window") + "</span> " +
-            escapeHtml(windowLabel) + "</span>" +
-            '<span class="chip"><span>' + t("region") + "</span> " +
-            escapeHtml(meta.region) + "</span>";
+            displayedCount + " " + t("films") + "</span>";
     }
 
     // Build a detail-page href that preserves filters and passes the list date
@@ -484,8 +603,8 @@
             '<article class="movie-card">' +
             '<div class="poster">' + poster + "</div>" +
             '<div class="movie-info">' +
-            '<p class="release-date">&#128197; ' +
-            escapeHtml(formatReleaseDate(movie.releaseDate, siteLanguage)) + "</p>" +
+            '<p class="release-date">' +
+            escapeHtml(formatMovieDateLine(movie)) + "</p>" +
             "<h2>" + escapeHtml(movie.title) + "</h2>" +
             genres +
             '<p class="overview">' + escapeHtml(movie.overview) + "</p>" +
@@ -534,7 +653,7 @@
         renderedCount = 0;
 
         if (!visibleMovies.length) {
-            showStatus("empty", false);
+            showStatus(isNowPlaying() ? "emptyNowPlaying" : "empty", false);
             renderMeta(0);
             return;
         }
@@ -553,13 +672,11 @@
             els.heroBg.style.backgroundImage = "";
             return;
         }
-        // Fade in only once the image is decoded, for a smooth entrance.
-        const img = new Image();
-        img.onload = function () {
-            els.heroBg.style.backgroundImage = "url('" + url + "')";
+        preloadBackdrop(url).then(function (loadedUrl) {
+            if (!loadedUrl) return;
+            els.heroBg.style.backgroundImage = "url('" + loadedUrl + "')";
             els.heroBg.classList.add("loaded");
-        };
-        img.src = url;
+        });
     }
 
     function featuredHtml(movie) {
@@ -570,10 +687,10 @@
             '<div class="featured-media" style="background-image:url(\'' +
             media + '\')"></div>' +
             '<div class="featured-body">' +
-            '<p class="featured-label">' + t("featuredLabel") + "</p>" +
+            '<p class="featured-label">' + t(isNowPlaying() ? "featuredLabelNow" : "featuredLabel") + "</p>" +
             '<h3 class="featured-title">' + escapeHtml(movie.title) + "</h3>" +
-            '<p class="release-date">&#128197; ' +
-            escapeHtml(formatReleaseDate(movie.releaseDate, siteLanguage)) + "</p>" +
+            '<p class="release-date">' +
+            escapeHtml(formatMovieDateLine(movie)) + "</p>" +
             '<p class="featured-overview">' + escapeHtml(movie.overview) + "</p>" +
             '<a class="cta" href="' + href + '">' + t("viewDetails") + "</a>" +
             "</div></div>"
@@ -621,34 +738,125 @@
     // ---- Data fetching ---------------------------------------------------
 
     let requestToken = 0;
+    const modeDataCache = new Map();
+    const MODE_CACHE_TTL_MS = 15 * 60 * 1000;
+
+    function buildFetchKey(mode, region, originalLanguage, siteLang, daysAhead, sortBy, sortOrder) {
+        return [
+            mode,
+            region,
+            originalLanguage || "",
+            siteLang,
+            mode === "upcoming" ? daysAhead : "",
+            sortBy,
+            sortOrder,
+        ].join("|");
+    }
+
+    function applyMovieData(data, token) {
+        if (token !== requestToken) return;
+        state.movies = data.movies;
+        state.meta = data.meta;
+        renderHighlights(data.movies);
+        applySearchAndRender();
+        preloadBackdrops(data.movies);
+    }
+
+    function prefetchOtherMode(currentKey) {
+        const mode = getMode();
+        const otherMode = mode === "nowPlaying" ? "upcoming" : "nowPlaying";
+        const region = els.region.value || "US";
+        const originalLanguage = els.originalLanguage.value || "";
+        const daysAhead = normalizeDaysAhead();
+        const sortDefaults = getDefaultSort(otherMode);
+        const sortBy = sortDefaults.sortBy;
+        const sortOrder = sortDefaults.sortOrder;
+        const prefetchKey = buildFetchKey(
+            otherMode, region, originalLanguage, siteLanguage, daysAhead, sortBy, sortOrder
+        );
+        if (modeDataCache.has(prefetchKey)) return;
+
+        const params = new URLSearchParams({
+            mode: otherMode,
+            region: region,
+            siteLanguage: siteLanguage,
+            originalLanguage: originalLanguage,
+            sortBy: sortBy,
+            sortOrder: sortOrder,
+        });
+        if (otherMode === "upcoming") {
+            params.set("daysAhead", String(daysAhead));
+        }
+
+        fetch("/api/upcoming-movies?" + params.toString())
+            .then(function (response) {
+                if (!response.ok) return null;
+                return response.json();
+            })
+            .then(function (data) {
+                if (!data) return;
+                modeDataCache.set(prefetchKey, {
+                    data: data,
+                    fetchedAt: Date.now(),
+                });
+                preloadBackdrops(data.movies);
+                console.log(
+                    "%c[perf] prefetch " + otherMode,
+                    "color:#888",
+                    { movies: data.movies.length }
+                );
+            })
+            .catch(function () { /* ignore background prefetch errors */ });
+    }
 
     function loadMovies() {
-        siteLanguage = els.siteLanguage.value || "en";
+        siteLanguage = siteLanguage || "en";
+        const mode = getMode();
 
         const region = els.region.value || "US";
         const originalLanguage = els.originalLanguage.value || "";
         const daysAhead = normalizeDaysAhead();
-        els.daysAhead.value = daysAhead;
+        if (mode === "upcoming") {
+            els.daysAhead.value = daysAhead;
+        }
         const sortBy = els.sortField.value || "release";
         const sortOrder = els.sortOrder.value || "asc";
 
-        // Reflect the current filters in the URL/storage right away.
         saveState();
 
         const params = new URLSearchParams({
+            mode: mode,
             region: region,
             siteLanguage: siteLanguage,
             originalLanguage: originalLanguage,
-            daysAhead: String(daysAhead),
             sortBy: sortBy,
             sortOrder: sortOrder,
         });
+        if (mode === "upcoming") {
+            params.set("daysAhead", String(daysAhead));
+        }
 
-        // Skeletons keep the layout stable and avoid a blank flash while loading.
-        renderSkeletons(BATCH_SIZE);
-        clearBackdrop();
+        const fetchKey = buildFetchKey(
+            mode, region, originalLanguage, siteLanguage, daysAhead, sortBy, sortOrder
+        );
+        const cached = modeDataCache.get(fetchKey);
+        const cacheFresh = cached &&
+            (Date.now() - cached.fetchedAt) < MODE_CACHE_TTL_MS;
+
         const token = ++requestToken;
         const startedAt = performance.now();
+
+        if (cached) {
+            applyMovieData(cached.data, token);
+        } else {
+            renderSkeletons(BATCH_SIZE);
+        }
+        clearBackdrop();
+
+        if (cacheFresh) {
+            prefetchOtherMode(fetchKey);
+            return;
+        }
 
         fetch("/api/upcoming-movies?" + params.toString())
             .then(function (response) {
@@ -656,34 +864,39 @@
                 return response.json();
             })
             .then(function (data) {
-                if (token !== requestToken) return; // superseded by a newer request
-                state.movies = data.movies;
-                state.meta = data.meta;
-                renderHighlights(data.movies);
-                applySearchAndRender();
-                preloadBackdrops(data.movies);
+                if (token !== requestToken) return;
+                modeDataCache.set(fetchKey, {
+                    data: data,
+                    fetchedAt: Date.now(),
+                });
+                applyMovieData(data, token);
 
                 // ---- Performance / debug metrics ----
                 const roundTripMs = Math.round(performance.now() - startedAt);
+                const fromCache = cached && !data.meta.cacheHit ? "CLIENT_CACHE_STALE" : null;
                 console.log(
-                    "%c[perf] upcoming",
+                    "%c[perf] " + (data.meta.mode || mode),
                     "color:#d4af37;font-weight:bold",
                     {
-                        source: data.meta.cacheHit ? "CACHE_HIT" : "TMDB_FETCH",
+                        source: fromCache || (data.meta.cacheHit ? "CACHE_HIT" : "TMDB_FETCH"),
                         pagesFetched: data.meta.pagesFetched,
                         serverFetchMs: data.meta.fetchMs,
                         roundTripMs: roundTripMs,
+                        clientCache: Boolean(cached),
                         moviesBeforeFilter: data.meta.rawCount,
                         moviesAfterFilter: data.meta.filteredCount,
                         moviesReturned: data.movies.length,
                         moviesRendered: renderedCount,
                     }
                 );
+                prefetchOtherMode(fetchKey);
             })
             .catch(function (error) {
                 if (token !== requestToken) return;
-                console.error("Failed to load movies:", error);
-                showStatus("error", true);
+                if (!cached) {
+                    console.error("Failed to load movies:", error);
+                    showStatus("error", true);
+                }
             });
     }
 
@@ -795,32 +1008,41 @@
     // Reset the drawer's filters back to defaults (search stays — it lives
     // outside the drawer), then refetch. Drawer stays open to show the result.
     function resetDrawer() {
-        const previousLang = els.siteLanguage.value || DEFAULTS.siteLanguage;
-        els.siteLanguage.value = DEFAULTS.siteLanguage;
+        const previousLang = siteLanguage;
+        syncSiteLanguage(DEFAULTS.siteLanguage);
         if (DEFAULTS.siteLanguage !== previousLang) {
-            siteLanguage = DEFAULTS.siteLanguage;
             applyTranslations();
         }
         els.region.value = DEFAULTS.region;
         els.originalLanguage.value = DEFAULTS.filmLanguage === "any" ? "" : DEFAULTS.filmLanguage;
         els.daysAhead.value = DEFAULTS.daysAhead;
-        els.sortField.value = DEFAULTS.sortBy;
-        els.sortOrder.value = DEFAULTS.sortOrder;
+        applyModeSortDefaults();
         loadMovies();
     }
 
     // ---- Wire up events --------------------------------------------------
 
-    function onSiteLanguageChange() {
-        siteLanguage = els.siteLanguage.value || "en";
-        applyTranslations();
-        loadMovies();
-    }
+    els.langButtons.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            if (btn.classList.contains("is-active")) return;
+            syncSiteLanguage(btn.dataset.lang);
+            applyTranslations();
+            loadMovies();
+        });
+    });
+
+    els.modeButtons.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            if (btn.classList.contains("is-active")) return;
+            setMode(btn.dataset.mode);
+            applyModeSortDefaults();
+            loadMovies();
+        });
+    });
 
     // Refetch only when the inputs that change the underlying data set change.
     els.region.addEventListener("change", loadMovies);
     els.originalLanguage.addEventListener("change", loadMovies);
-    els.siteLanguage.addEventListener("change", onSiteLanguageChange);
 
     // Days-ahead: never reset the field mid-typing. Apply only on a 10s pause...
     els.daysAhead.addEventListener("input", function () {
@@ -883,8 +1105,15 @@
     // ---- Initial load ----------------------------------------------------
 
     // Restore from the URL first (shareable), then localStorage, then defaults.
-    const initialState =
-        readStateFromUrl() || readStateFromStorage() || Object.assign({}, DEFAULTS);
+    const urlState = readStateFromUrl();
+    const storageState = readStateFromStorage();
+    let initialState = urlState || storageState;
+    if (!initialState) {
+        initialState = Object.assign({}, DEFAULTS);
+        const sortDefaults = getDefaultSort(initialState.mode);
+        initialState.sortBy = sortDefaults.sortBy;
+        initialState.sortOrder = sortDefaults.sortOrder;
+    }
     applyState(initialState);
     loadMovies();
 })();

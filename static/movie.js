@@ -21,6 +21,7 @@
             footer: "Data from The Movie Database (TMDb).",
             runtime: "Runtime",
             release: "Release",
+            inTheatersSince: "In theaters since",
             roles: {
                 Director: "Director",
                 Writers: "Writers",
@@ -46,6 +47,7 @@
             footer: "Dados do The Movie Database (TMDb).",
             runtime: "Duração",
             release: "Estreia",
+            inTheatersSince: "Nos cinemas desde",
             roles: {
                 Director: "Direção",
                 Writers: "Roteiro",
@@ -60,6 +62,8 @@
     const movieId = params.get("id");
     // Accept the new siteLanguage param, with a fallback to the older lang param.
     const siteLanguage = params.get("siteLanguage") || params.get("lang") || "en";
+    const browseMode = params.get("mode") || "upcoming";
+    const isNowPlaying = browseMode === "nowPlaying";
     const lang = siteLanguage === "pt" ? "pt" : "en";
     const dict = I18N[lang];
 
@@ -178,12 +182,16 @@
               escapeHtml(movie.title) + ' poster">'
             : '<div class="placeholder">' + dict.noPoster + "</div>";
 
-        const releaseLabel = formatReleaseDate(movie.releaseDate);
+        const displayDate = isNowPlaying
+            ? (movie.theaterSinceDate || movie.releaseDate)
+            : movie.releaseDate;
+        const releaseLabel = formatReleaseDate(displayDate);
         const runtime = formatRuntime(movie.runtime);
 
         let chips = "";
         if (releaseLabel) {
-            chips += '<span class="chip"><span>' + dict.release + "</span> " +
+            const chipKey = isNowPlaying ? "inTheatersSince" : "release";
+            chips += '<span class="chip"><span>' + dict[chipKey] + "</span> " +
                 escapeHtml(releaseLabel) + "</span>";
         }
         if (runtime) {
@@ -222,12 +230,20 @@
             document.body.style.backgroundAttachment = "fixed";
         }
 
+        const eyebrowText = releaseLabel
+            ? (isNowPlaying
+                ? dict.inTheatersSince + " " + releaseLabel
+                : dict.inTheaters + " " + releaseLabel)
+            : "";
+
         contentEl.innerHTML =
             '<section class="detail-hero">' +
             heroBackdrop +
             '<div class="detail-poster">' + poster + "</div>" +
             '<div class="detail-main">' +
-            '<p class="eyebrow">' + dict.inTheaters + " " + escapeHtml(releaseLabel) + "</p>" +
+            (eyebrowText
+                ? '<p class="eyebrow">' + escapeHtml(eyebrowText) + "</p>"
+                : "") +
             '<h1 class="detail-title">' + escapeHtml(movie.title) + "</h1>" +
             tagline +
             '<div class="meta-row">' + chips + "</div>" +

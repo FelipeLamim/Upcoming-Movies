@@ -20,6 +20,7 @@ GET /api/movie/<id>
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -68,17 +69,28 @@ MAX_MOVIES = 100
 # How many discover pages to pull at most (each page ~20 movies). Caps latency.
 MAX_PAGES = 15
 
-# In-memory cache for the upcoming endpoint, keyed by the inputs that change the
-# underlying TMDb data (region, language, original language, days ahead).
-# Sorting/search are applied on top, so they don't need their own cache entries.
-UPCOMING_CACHE = {}
-# Per-movie detail cache, keyed by (movie_id, tmdb_language).
+# In-memory cache for movie list endpoints, keyed by mode + filters.
+MOVIES_LIST_CACHE = {}
+# Per-movie detail cache, keyed by (movie_id, tmdb_language, region).
 MOVIE_DETAIL_CACHE = {}
+# Release-dates payloads are region-agnostic; cache by movie id.
+RELEASE_DATES_CACHE = {}
+# Original premiere date from /movie/{id} release_date.
+MOVIE_ORIGINAL_RELEASE_CACHE = {}
+# Combined original + release_dates for now-playing slow-path checks.
+MOVIE_NOW_PLAYING_META_CACHE = {}
 CACHE_TTL_SECONDS = 15 * 60  # 15 minutes (within the 10–30 min target)
+
+# Valid browsing modes for the catalog API.
+MODE_UPCOMING = "upcoming"
+MODE_NOW_PLAYING = "nowPlaying"
+VALID_MODES = {MODE_UPCOMING, MODE_NOW_PLAYING}
 
 # Date window bounds requested by the product spec.
 MIN_DAYS_AHEAD = 1
 MAX_DAYS_AHEAD = 365  # up to 1 year
+NOW_PLAYING_MAX_AGE_DAYS = 60  # exclude old re-releases beyond this window
+NOW_PLAYING_MAX_ORIGINAL_AGE_YEARS = 2  # original premiere must be within this many years
 
 PORT = int(os.getenv("PORT", "8000"))
 
@@ -147,29 +159,48 @@ def passes_filters(movie):
     )
 
 
-def get_filtered_movies(region, site_language, original_language, days_ahead):
-    """Return the deduped + filtered (but unsorted) movie list for these inputs.
+def normalize_mode(raw_value):
+    """Return a supported catalog mode (defaults to upcoming)."""
+    mode = (raw_value or MODE_UPCOMING).strip()
+    return mode if mode in VALID_MODES else MODE_UPCOMING
 
-    Results are cached for CACHE_TTL_SECONDS, keyed by everything that affects the
-    underlying TMDb data. Sorting and search are applied later, on top of this.
+
+def get_movies_list(mode, region, site_language, original_language, days_ahead):
+    """Return the deduped + filtered movie list for the given mode and filters.
+
+    Results are cached for CACHE_TTL_SECONDS. Sorting/search are applied later.
     """
+    mode = normalize_mode(mode)
     tmdb_language = SITE_LANGUAGE_MAP.get(site_language, "en-US")
-    cache_key = (region, tmdb_language, original_language, days_ahead)
+    days_key = days_ahead if mode == MODE_UPCOMING else 0
+    cache_key = (mode, region, tmdb_language, original_language, days_key)
 
     now = time.time()
-    cached = UPCOMING_CACHE.get(cache_key)
+    cached = MOVIES_LIST_CACHE.get(cache_key)
     if cached and (now - cached["createdAt"]) < CACHE_TTL_SECONDS:
         cached["cacheHit"] = True
         cached["pagesFetched"] = 0
         cached["fetchMs"] = 0
         return cached
 
+    if mode == MODE_NOW_PLAYING:
+        entry = _fetch_now_playing_list(
+            region, tmdb_language, original_language, now
+        )
+    else:
+        entry = _fetch_upcoming_list(
+            region, tmdb_language, original_language, days_ahead, now
+        )
+
+    MOVIES_LIST_CACHE[cache_key] = entry
+    return entry
+
+
+def _fetch_upcoming_list(region, tmdb_language, original_language, days_ahead, now):
+    """Upcoming mode: theatrical releases from today through today + daysAhead."""
     today = date.today()
     window_end = today + timedelta(days=days_ahead)
 
-    # Pull pages sorted by popularity so the most relevant come first. Because the
-    # results are popularity-descending, once a page ends below our popularity
-    # threshold no later page can qualify, so we can stop early.
     started = time.time()
     raw_movies = []
     pages_fetched = 0
@@ -193,21 +224,15 @@ def get_filtered_movies(region, site_language, original_language, days_ahead):
 
         if page >= data.get("total_pages", page):
             break
-        # Early stop: remaining pages are all below the popularity threshold.
         if results and (results[-1].get("popularity") or 0) < MIN_POPULARITY:
             break
-        # Early stop: we already have comfortably more than we will display.
         if len(raw_movies) >= MAX_MOVIES * 2:
             break
 
     fetch_ms = int((time.time() - started) * 1000)
     raw_count = len(raw_movies)
+    unique_movies = list({m["id"]: m for m in raw_movies}.values())
 
-    # Remove duplicates by TMDB id.
-    unique_by_id = {m["id"]: m for m in raw_movies}
-    unique_movies = list(unique_by_id.values())
-
-    # Filter: base filters + the exact release-date window.
     filtered = []
     for movie in unique_movies:
         try:
@@ -217,7 +242,8 @@ def get_filtered_movies(region, site_language, original_language, days_ahead):
         if today <= release <= window_end and passes_filters(movie):
             filtered.append(movie)
 
-    entry = {
+    return {
+        "mode": MODE_UPCOMING,
         "filtered": filtered,
         "tmdbLanguage": tmdb_language,
         "windowStart": today.isoformat(),
@@ -230,14 +256,105 @@ def get_filtered_movies(region, site_language, original_language, days_ahead):
         "pagesFetched": pages_fetched,
         "fetchMs": fetch_ms,
     }
-    UPCOMING_CACHE[cache_key] = entry
-    return entry
 
 
-def fetch_upcoming(region, site_language, original_language, days_ahead,
+def _fetch_now_playing_list(region, tmdb_language, original_language, now):
+    """Now in Theaters: region-specific movies in theaters within the last 60 days."""
+    today = date.today()
+    window_start = today - timedelta(days=NOW_PLAYING_MAX_AGE_DAYS)
+    started = time.time()
+    raw_movies = []
+    pages_fetched = 0
+
+    for page in range(1, MAX_PAGES + 1):
+        data = tmdb_get(
+            "/movie/now_playing",
+            region=region,
+            language=tmdb_language,
+            page=page,
+        )
+        results = data.get("results", [])
+        raw_movies.extend(results)
+        pages_fetched += 1
+
+        if page >= data.get("total_pages", page):
+            break
+        if len(raw_movies) >= MAX_MOVIES * 2:
+            break
+
+    fetch_ms = int((time.time() - started) * 1000)
+    raw_count = len(raw_movies)
+    unique_movies = list({m["id"]: m for m in raw_movies}.values())
+
+    candidates = []
+    for movie in unique_movies:
+        if original_language and movie.get("original_language") != original_language:
+            continue
+        if not passes_filters(movie):
+            continue
+        candidates.append(movie)
+
+    filtered = []
+    slow_movies = []
+    cutoff = original_release_cutoff(today)
+
+    for movie in candidates:
+        list_release = _parse_list_release(movie)
+        if (
+            list_release
+            and window_start <= list_release <= today
+            and list_release >= cutoff
+        ):
+            title = movie.get("title") or movie.get("name") or "Untitled"
+            regional = list_release.isoformat()
+            log_now_playing_decision(
+                title, regional, regional, True, "quick_path"
+            )
+            updated = dict(movie)
+            updated["release_date"] = regional
+            filtered.append(updated)
+        else:
+            slow_movies.append(movie)
+
+    if slow_movies:
+        def _evaluate_slow(movie):
+            try:
+                return _evaluate_now_playing_slow(
+                    movie, region, today, window_start
+                )
+            except requests.RequestException as error:
+                title = movie.get("title") or movie.get("name") or "Untitled"
+                log_now_playing_decision(
+                    title, None, None, False, f"tmdb_error={error}"
+                )
+                return None
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for kept in pool.map(_evaluate_slow, slow_movies):
+                if kept:
+                    filtered.append(kept)
+
+    return {
+        "mode": MODE_NOW_PLAYING,
+        "filtered": filtered,
+        "tmdbLanguage": tmdb_language,
+        "windowStart": window_start.isoformat(),
+        "windowEnd": today.isoformat(),
+        "rawCount": raw_count,
+        "dedupedCount": len(unique_movies),
+        "filteredCount": len(filtered),
+        "createdAt": now,
+        "cacheHit": False,
+        "pagesFetched": pages_fetched,
+        "fetchMs": fetch_ms,
+    }
+
+
+def fetch_upcoming(mode, region, site_language, original_language, days_ahead,
                    sort_by, sort_order):
     """Sort + trim the (cached) filtered list into the API response shape."""
-    data = get_filtered_movies(region, site_language, original_language, days_ahead)
+    mode = normalize_mode(mode)
+    data = get_movies_list(mode, region, site_language, original_language, days_ahead)
 
     # Build a stable pool first: the most relevant MAX_MOVIES by popularity. This
     # keeps the returned set identical regardless of sort, so the client can
@@ -279,10 +396,11 @@ def fetch_upcoming(region, site_language, original_language, days_ahead,
     return {
         "movies": movies,
         "meta": {
+            "mode": mode,
             "region": region,
             "siteLanguage": site_language,
             "originalLanguage": original_language or "any",
-            "daysAhead": days_ahead,
+            "daysAhead": days_ahead if mode == MODE_UPCOMING else None,
             "windowStart": data["windowStart"],
             "windowEnd": data["windowEnd"],
             "rawCount": data["rawCount"],
@@ -373,6 +491,208 @@ def pick_regional_release_date(release_dates_payload, region, global_fallback):
     return fallback, True
 
 
+def fetch_release_dates(movie_id):
+    """Fetch (and cache) the /release_dates payload for a movie."""
+    now = time.time()
+    cached = RELEASE_DATES_CACHE.get(movie_id)
+    if cached and (now - cached[0]) < CACHE_TTL_SECONDS:
+        return cached[1]
+    meta_cached = MOVIE_NOW_PLAYING_META_CACHE.get(movie_id)
+    if meta_cached and (now - meta_cached[0]) < CACHE_TTL_SECONDS:
+        return meta_cached[1]["release_dates"]
+    return fetch_movie_now_playing_meta(movie_id)["release_dates"]
+
+
+def fetch_movie_original_release(movie_id):
+    """Return the movie's original release_date from /movie/{id}."""
+    return fetch_movie_now_playing_meta(movie_id)["original"]
+
+
+def fetch_movie_now_playing_meta(movie_id):
+    """Fetch original release_date + release_dates in one TMDB call (cached)."""
+    now = time.time()
+    cached = MOVIE_NOW_PLAYING_META_CACHE.get(movie_id)
+    if cached and (now - cached[0]) < CACHE_TTL_SECONDS:
+        return cached[1]
+
+    orig_cached = MOVIE_ORIGINAL_RELEASE_CACHE.get(movie_id)
+    rd_cached = RELEASE_DATES_CACHE.get(movie_id)
+    if (
+        orig_cached
+        and rd_cached
+        and (now - orig_cached[0]) < CACHE_TTL_SECONDS
+        and (now - rd_cached[0]) < CACHE_TTL_SECONDS
+    ):
+        meta = {"original": orig_cached[1], "release_dates": rd_cached[1]}
+        MOVIE_NOW_PLAYING_META_CACHE[movie_id] = (now, meta)
+        return meta
+
+    data = tmdb_get(f"/movie/{movie_id}", append_to_response="release_dates")
+    original = (data.get("release_date") or "").strip()
+    release_dates = data.get("release_dates") or {}
+    meta = {"original": original, "release_dates": release_dates}
+    MOVIE_NOW_PLAYING_META_CACHE[movie_id] = (now, meta)
+    MOVIE_ORIGINAL_RELEASE_CACHE[movie_id] = (now, original)
+    RELEASE_DATES_CACHE[movie_id] = (now, release_dates)
+    return meta
+
+
+def _parse_list_release(movie):
+    raw = movie.get("release_date") or ""
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _evaluate_now_playing_slow(movie, region, today, window_start):
+    """Full original + regional validation for re-releases and edge cases."""
+    title = movie.get("title") or movie.get("name") or "Untitled"
+    meta = fetch_movie_now_playing_meta(movie["id"])
+    original = meta["original"]
+
+    if not passes_contemporary_original(original, today):
+        log_now_playing_decision(
+            title, original, None, False, "original_release_older_than_2y"
+        )
+        return None
+
+    list_release = _parse_list_release(movie)
+    if list_release and window_start <= list_release <= today:
+        regional = list_release.isoformat()
+    else:
+        regional, _ = pick_current_theater_release(
+            meta["release_dates"],
+            region,
+            movie.get("release_date") or "",
+            today=today,
+        )
+
+    if not regional:
+        log_now_playing_decision(
+            title, original, None, False, "no_regional_theatrical_in_window"
+        )
+        return None
+
+    log_now_playing_decision(title, original, regional, True)
+    updated = dict(movie)
+    updated["release_date"] = regional
+    return updated
+
+
+def original_release_cutoff(today=None):
+    """Earliest original release date still considered contemporary."""
+    today = today or date.today()
+    try:
+        return today.replace(year=today.year - NOW_PLAYING_MAX_ORIGINAL_AGE_YEARS)
+    except ValueError:
+        return today.replace(
+            year=today.year - NOW_PLAYING_MAX_ORIGINAL_AGE_YEARS, month=2, day=28
+        )
+
+
+def passes_contemporary_original(release_iso, today=None):
+    """True when the original premiere is within the last two years."""
+    if not release_iso:
+        return False
+    try:
+        parsed = datetime.strptime(release_iso, "%Y-%m-%d").date()
+    except ValueError:
+        return False
+    return parsed >= original_release_cutoff(today)
+
+
+def log_now_playing_decision(title, original_release, regional_theatrical, keep, reason=""):
+    decision = "KEEP" if keep else "EXCLUDE"
+    suffix = f" reason={reason}" if reason else ""
+    print(
+        f"[nowPlaying] {decision} title={title!r} "
+        f"originalRelease={original_release or 'n/a'} "
+        f"regionalTheatrical={regional_theatrical or 'n/a'}{suffix}",
+        flush=True,
+    )
+
+
+def pick_current_theater_release(
+    release_dates_payload, region, global_fallback, today=None, max_age_days=None
+):
+    """Most recent regional theatrical release within the last max_age_days.
+
+    Used for Now in Theaters so re-releases count from their current run, not
+    the original premiere decades ago. Returns (iso_date_or_none, used_fallback).
+    """
+    today = today or date.today()
+    max_age_days = max_age_days if max_age_days is not None else NOW_PLAYING_MAX_AGE_DAYS
+    window_start = today - timedelta(days=max_age_days)
+    region = (region or "US").upper()
+    candidates = []
+
+    for entry in (release_dates_payload or {}).get("results") or []:
+        if (entry.get("iso_3166_1") or "").upper() != region:
+            continue
+        for rd in entry.get("release_dates") or []:
+            if rd.get("type") not in THEATRICAL_RELEASE_TYPE_IDS:
+                continue
+            raw = rd.get("release_date") or ""
+            if not raw:
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+            except ValueError:
+                continue
+            if window_start <= parsed <= today:
+                candidates.append(parsed)
+
+    if candidates:
+        return max(candidates).isoformat(), False
+
+    fallback = (global_fallback or "").strip()
+    if fallback:
+        try:
+            parsed = datetime.strptime(fallback, "%Y-%m-%d").date()
+            if window_start <= parsed <= today:
+                return fallback, True
+        except ValueError:
+            pass
+    return None, True
+
+
+def pick_theater_since_date(release_dates_payload, region, global_fallback, today=None):
+    """Earliest past theatrical release in a region (types 2/3) — when it entered theaters."""
+    today = today or date.today()
+    region = (region or "US").upper()
+    candidates = []
+
+    for entry in (release_dates_payload or {}).get("results") or []:
+        if (entry.get("iso_3166_1") or "").upper() != region:
+            continue
+        for rd in entry.get("release_dates") or []:
+            if rd.get("type") not in THEATRICAL_RELEASE_TYPE_IDS:
+                continue
+            raw = rd.get("release_date") or ""
+            if not raw:
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+            except ValueError:
+                continue
+            if parsed <= today:
+                candidates.append(parsed)
+
+    if candidates:
+        return min(candidates).isoformat(), False
+
+    fallback = (global_fallback or "").strip()
+    if fallback:
+        try:
+            parsed = datetime.strptime(fallback, "%Y-%m-%d").date()
+            if parsed <= today:
+                return fallback, True
+        except ValueError:
+            pass
+    return fallback, True
+
+
 def fetch_movie_detail(movie_id, site_language, region="US"):
     """Fetch and trim a single movie's details, credits, and videos (cached)."""
     tmdb_language = SITE_LANGUAGE_MAP.get(site_language, "en-US")
@@ -394,6 +714,9 @@ def fetch_movie_detail(movie_id, site_language, region="US"):
     regional_release, used_fallback = pick_regional_release_date(
         details.get("release_dates"), region, global_release
     )
+    theater_since, since_fallback = pick_current_theater_release(
+        details.get("release_dates"), region, global_release
+    )
     release_date = regional_release or global_release
 
     credits = details.get("credits") or {}
@@ -413,11 +736,14 @@ def fetch_movie_detail(movie_id, site_language, region="US"):
         "tagline": details.get("tagline") or "",
         "overview": details.get("overview") or "",
         "releaseDate": release_date,
+        "theaterSinceDate": theater_since or release_date,
         "releaseDateMeta": {
             "region": region,
             "detailReleaseDate": release_date,
+            "theaterSinceDate": theater_since or release_date,
             "globalReleaseDate": global_release,
             "usedFallback": used_fallback,
+            "sinceFallback": since_fallback,
         },
         "runtime": details.get("runtime") or 0,
         "voteAverage": round(details.get("vote_average") or 0, 1),
@@ -462,7 +788,7 @@ def build_sitemap():
     urls = [SITE_URL + "/"]
     try:
         # Use the broadest default window so the sitemap covers the full catalog.
-        data = get_filtered_movies("US", "en", "", MAX_DAYS_AHEAD)
+        data = get_movies_list(MODE_UPCOMING, "US", "en", "", MAX_DAYS_AHEAD)
         for movie in data["filtered"]:
             movie_id = movie.get("id")
             if movie_id:
@@ -697,6 +1023,7 @@ class AppHandler(BaseHTTPRequestHandler):
             print(f"  ! TMDb request failed: {error}")
 
     def handle_upcoming(self, query):
+        mode = normalize_mode(query.get("mode", [MODE_UPCOMING])[0])
         region = (query.get("region", ["US"])[0] or "US").upper()
         site_language = query.get("siteLanguage", ["en"])[0] or "en"
         original_language = query.get("originalLanguage", [""])[0] or ""
@@ -712,18 +1039,18 @@ class AppHandler(BaseHTTPRequestHandler):
             sort_order = "asc"
 
         result = fetch_upcoming(
-            region, site_language, original_language, days_ahead, sort_by, sort_order
+            mode, region, site_language, original_language, days_ahead, sort_by, sort_order
         )
 
         meta = result["meta"]
         source = "CACHE_HIT" if meta["cacheHit"] else "TMDB_FETCH"
         print(
-            "[upcoming] "
+            f"[{mode}] "
             f"{source} "
             f"region={meta['region']} "
             f"originalLanguage={meta['originalLanguage']} "
             f"siteLanguage={meta['siteLanguage']} "
-            f"daysAhead={meta['daysAhead']} "
+            f"daysAhead={meta.get('daysAhead')} "
             f"pages={meta['pagesFetched']} "
             f"fetchMs={meta['fetchMs']} "
             f"before={meta['rawCount']} after={meta['filteredCount']} "
