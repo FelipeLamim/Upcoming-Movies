@@ -26,6 +26,7 @@
             searchPlaceholder: "Search by title…",
             region: "Region",
             originalLanguage: "Film language",
+            genre: "Genre",
             daysAhead: "Days ahead",
             siteLanguage: "Website language",
             sortBy: "Sort by",
@@ -35,6 +36,7 @@
             ascending: "Ascending",
             descending: "Descending",
             anyLanguage: "Any language",
+            anyGenre: "Any genre",
             showing: "Showing",
             films: "films",
             window: "Window",
@@ -84,6 +86,7 @@
             searchPlaceholder: "Pesquisar por título…",
             region: "Região",
             originalLanguage: "Idioma do filme",
+            genre: "Gênero",
             daysAhead: "Dias à frente",
             siteLanguage: "Idioma do site",
             sortBy: "Ordenar por",
@@ -93,6 +96,7 @@
             ascending: "Crescente",
             descending: "Decrescente",
             anyLanguage: "Qualquer idioma",
+            anyGenre: "Qualquer gênero",
             showing: "Mostrando",
             films: "filmes",
             window: "Período",
@@ -163,6 +167,7 @@
         search: document.getElementById("search"),
         region: document.getElementById("region"),
         originalLanguage: document.getElementById("original-language"),
+        genre: document.getElementById("genre"),
         daysAhead: document.getElementById("days-ahead"),
         sortField: document.getElementById("sort-field"),
         sortOrder: document.getElementById("sort-order"),
@@ -204,6 +209,8 @@
     };
 
     let siteLanguage = "en";
+    let cachedGenres = [];
+    let genresLanguage = "";
 
     // How many cards to add per render batch (initial paint + each "Load more").
     const BATCH_SIZE = 24;
@@ -230,6 +237,7 @@
         search: "",
         region: "US",
         filmLanguage: "any",
+        genre: "any",
         daysAhead: "60",
         siteLanguage: "en",
         sortBy: "release",
@@ -306,6 +314,7 @@
             search: p.get("search") || "",
             region: p.get("region") || DEFAULTS.region,
             filmLanguage: p.get("filmLanguage") || DEFAULTS.filmLanguage,
+            genre: p.get("genre") || DEFAULTS.genre,
             daysAhead: p.get("daysAhead") || DEFAULTS.daysAhead,
             siteLanguage: p.get("siteLanguage") || DEFAULTS.siteLanguage,
             sortBy: p.has("sortBy") ? p.get("sortBy") : sortDefaults.sortBy,
@@ -328,6 +337,7 @@
             search: els.search.value.trim(),
             region: els.region.value || DEFAULTS.region,
             filmLanguage: els.originalLanguage.value === "" ? "any" : els.originalLanguage.value,
+            genre: els.genre.value === "" ? "any" : els.genre.value,
             daysAhead: String(els.daysAhead.value || DEFAULTS.daysAhead),
             siteLanguage: siteLanguage || DEFAULTS.siteLanguage,
             sortBy: els.sortField.value || DEFAULTS.sortBy,
@@ -345,6 +355,9 @@
             sortBy: st.sortBy,
             sortOrder: st.sortOrder,
         };
+        if (st.genre && st.genre !== "any") {
+            params.genre = st.genre;
+        }
         if (params.mode === "upcoming") {
             params.daysAhead = st.daysAhead;
         }
@@ -379,6 +392,7 @@
         setMode(st.mode || DEFAULTS.mode);
         els.region.value = st.region;
         els.originalLanguage.value = st.filmLanguage === "any" ? "" : st.filmLanguage;
+        els.genre.value = st.genre === "any" ? "" : (st.genre || "");
         els.daysAhead.value = st.daysAhead;
         els.sortField.value = st.sortBy;
         els.sortOrder.value = st.sortOrder;
@@ -471,6 +485,53 @@
         if (current) select.value = current;
     }
 
+    function setCachedGenres(genres, lang) {
+        if (!genres || !genres.length) return;
+        cachedGenres = genres;
+        genresLanguage = lang || siteLanguage;
+        populateGenreSelect();
+    }
+
+    function syncGenresFromMeta(meta) {
+        if (!meta || !meta.availableGenres || !meta.availableGenres.length) return;
+        if (genresLanguage === siteLanguage && cachedGenres.length) return;
+        setCachedGenres(meta.availableGenres, siteLanguage);
+    }
+
+    function populateGenreSelect() {
+        if (!els.genre) return;
+        const current = els.genre.value;
+        els.genre.innerHTML = "";
+        const anyOption = document.createElement("option");
+        anyOption.value = "";
+        anyOption.textContent = t("anyGenre");
+        els.genre.appendChild(anyOption);
+        cachedGenres.forEach(function (genre) {
+            const option = document.createElement("option");
+            option.value = String(genre.id);
+            option.textContent = genre.name;
+            els.genre.appendChild(option);
+        });
+        if (current) els.genre.value = current;
+    }
+
+    function loadGenres() {
+        return fetch("/api/genres?siteLanguage=" + encodeURIComponent(siteLanguage))
+            .then(function (response) {
+                if (!response.ok) throw new Error("Failed to load genres");
+                return response.json();
+            })
+            .then(function (data) {
+                setCachedGenres(data.genres || [], siteLanguage);
+            })
+            .catch(function (error) {
+                console.warn("Genre list endpoint unavailable, will use movie API fallback:", error);
+                if (!cachedGenres.length) {
+                    populateGenreSelect();
+                }
+            });
+    }
+
     function applyTranslations() {
         document.documentElement.lang = siteLanguage === "pt" ? "pt-BR" : "en";
         document.querySelectorAll("[data-i18n]").forEach(function (node) {
@@ -482,6 +543,7 @@
         els.search.placeholder = t("searchPlaceholder");
         populateSelect(els.region, REGIONS);
         populateSelect(els.originalLanguage, LANGUAGES);
+        populateGenreSelect();
         els.drawerClose.setAttribute("aria-label", t("close"));
         // Keep the SEO-friendly home title regardless of UI language.
         document.title = "Movie Horizon | Discover Upcoming Movies Worldwide";
@@ -496,8 +558,15 @@
         const langLabel = langSelect.options[langSelect.selectedIndex]
             ? langSelect.options[langSelect.selectedIndex].text
             : "";
+        const genreSelect = els.genre;
+        const genreLabel = genreSelect && genreSelect.value && genreSelect.selectedIndex >= 0
+            ? genreSelect.options[genreSelect.selectedIndex].text
+            : "";
         const days = normalizeDaysAhead();
         const parts = [region, langLabel];
+        if (genreLabel && genreSelect.value) {
+            parts.push(genreLabel);
+        }
         if (!isNowPlaying()) {
             parts.push(days + "d");
         }
@@ -629,6 +698,30 @@
         });
     }
 
+    function getSelectedGenreId() {
+        const raw = els.genre.value;
+        if (!raw) return null;
+        const id = parseInt(raw, 10);
+        return isNaN(id) ? null : id;
+    }
+
+    function filterAndSortMovies(list) {
+        let movies = sortMovies(list);
+        const genreId = getSelectedGenreId();
+        if (genreId) {
+            movies = movies.filter(function (m) {
+                return (m.genreIds || []).indexOf(genreId) !== -1;
+            });
+        }
+        const term = els.search.value.trim().toLowerCase();
+        if (term) {
+            movies = movies.filter(function (m) {
+                return m.title.toLowerCase().indexOf(term) !== -1;
+            });
+        }
+        return movies;
+    }
+
     // Append the next batch of cards and update the "Load more" button.
     function renderNextBatch() {
         const slice = visibleMovies.slice(renderedCount, renderedCount + BATCH_SIZE);
@@ -637,24 +730,19 @@
         els.loadMore.hidden = renderedCount >= visibleMovies.length;
     }
 
-    // Applies sort (local) + search (local) and renders the first batch.
-    function applySearchAndRender() {
-        // Keep the URL/storage in sync (covers search + sort changes too).
+    // Applies sort, genre, and search locally, then renders the first batch.
+    function applySearchAndRender(updateHighlights) {
         saveState();
 
-        const sorted = sortMovies(state.movies);
-        const term = els.search.value.trim().toLowerCase();
-        visibleMovies = term
-            ? sorted.filter(function (m) {
-                  return m.title.toLowerCase().indexOf(term) !== -1;
-              })
-            : sorted;
-
+        visibleMovies = filterAndSortMovies(state.movies);
         renderedCount = 0;
 
         if (!visibleMovies.length) {
             showStatus(isNowPlaying() ? "emptyNowPlaying" : "empty", false);
             renderMeta(0);
+            if (updateHighlights !== false) {
+                renderHighlights([]);
+            }
             return;
         }
 
@@ -662,6 +750,9 @@
         els.list.innerHTML = "";
         renderNextBatch();
         renderMeta(visibleMovies.length);
+        if (updateHighlights !== false) {
+            renderHighlights(visibleMovies);
+        }
     }
 
     // ---- Cinematic highlights (hero + featured + most anticipated) --------
@@ -741,7 +832,8 @@
     const modeDataCache = new Map();
     const MODE_CACHE_TTL_MS = 15 * 60 * 1000;
 
-    function buildFetchKey(mode, region, originalLanguage, siteLang, daysAhead, sortBy, sortOrder) {
+    function buildFetchKey(mode, region, originalLanguage, siteLang, daysAhead,
+                          sortBy, sortOrder) {
         return [
             mode,
             region,
@@ -755,9 +847,9 @@
 
     function applyMovieData(data, token) {
         if (token !== requestToken) return;
+        syncGenresFromMeta(data.meta);
         state.movies = data.movies;
         state.meta = data.meta;
-        renderHighlights(data.movies);
         applySearchAndRender();
         preloadBackdrops(data.movies);
     }
@@ -772,7 +864,8 @@
         const sortBy = sortDefaults.sortBy;
         const sortOrder = sortDefaults.sortOrder;
         const prefetchKey = buildFetchKey(
-            otherMode, region, originalLanguage, siteLanguage, daysAhead, sortBy, sortOrder
+            otherMode, region, originalLanguage, siteLanguage, daysAhead,
+            sortBy, sortOrder
         );
         if (modeDataCache.has(prefetchKey)) return;
 
@@ -837,7 +930,8 @@
         }
 
         const fetchKey = buildFetchKey(
-            mode, region, originalLanguage, siteLanguage, daysAhead, sortBy, sortOrder
+            mode, region, originalLanguage, siteLanguage, daysAhead,
+            sortBy, sortOrder
         );
         const cached = modeDataCache.get(fetchKey);
         const cacheFresh = cached &&
@@ -1015,6 +1109,7 @@
         }
         els.region.value = DEFAULTS.region;
         els.originalLanguage.value = DEFAULTS.filmLanguage === "any" ? "" : DEFAULTS.filmLanguage;
+        els.genre.value = DEFAULTS.genre === "any" ? "" : DEFAULTS.genre;
         els.daysAhead.value = DEFAULTS.daysAhead;
         applyModeSortDefaults();
         loadMovies();
@@ -1026,8 +1121,10 @@
         btn.addEventListener("click", function () {
             if (btn.classList.contains("is-active")) return;
             syncSiteLanguage(btn.dataset.lang);
-            applyTranslations();
-            loadMovies();
+            loadGenres().then(function () {
+                applyTranslations();
+                loadMovies();
+            });
         });
     });
 
@@ -1043,6 +1140,7 @@
     // Refetch only when the inputs that change the underlying data set change.
     els.region.addEventListener("change", loadMovies);
     els.originalLanguage.addEventListener("change", loadMovies);
+    els.genre.addEventListener("change", applySearchAndRender);
 
     // Days-ahead: never reset the field mid-typing. Apply only on a 10s pause...
     els.daysAhead.addEventListener("input", function () {
@@ -1114,6 +1212,8 @@
         initialState.sortBy = sortDefaults.sortBy;
         initialState.sortOrder = sortDefaults.sortOrder;
     }
-    applyState(initialState);
-    loadMovies();
+    loadGenres().then(function () {
+        applyState(initialState);
+        loadMovies();
+    });
 })();

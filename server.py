@@ -7,9 +7,13 @@ the frontend only ever talks to our own /api/* endpoints.
 Endpoints
 ---------
 GET /api/upcoming-movies
-    Query params: region, siteLanguage, originalLanguage, daysAhead,
+    Query params: mode, region, siteLanguage, originalLanguage, genre, daysAhead,
     sortBy (release|popularity), sortOrder (asc|desc).
     Returns the filtered + sorted movie list plus some meta counts.
+
+GET /api/genres
+    Query params: siteLanguage.
+    Returns TMDB movie genres localized for the site language.
 
 GET /api/movie/<id>
     Query params: siteLanguage.
@@ -138,6 +142,16 @@ def get_genre_map(language):
     return mapping
 
 
+def get_genre_list(site_language):
+    """Return sorted [{id, name}, ...] for the genre filter dropdown."""
+    tmdb_language = SITE_LANGUAGE_MAP.get(site_language, "en-US")
+    genre_map = get_genre_map(tmdb_language)
+    return sorted(
+        [{"id": gid, "name": name} for gid, name in genre_map.items()],
+        key=lambda item: item["name"].lower(),
+    )
+
+
 def clamp_days_ahead(raw_value):
     """Parse and clamp the requested day interval to [MIN_DAYS_AHEAD, MAX_DAYS_AHEAD]."""
     try:
@@ -165,7 +179,19 @@ def normalize_mode(raw_value):
     return mode if mode in VALID_MODES else MODE_UPCOMING
 
 
-def get_movies_list(mode, region, site_language, original_language, days_ahead):
+def parse_genre_id(raw_value):
+    """Parse a TMDB genre id from the query string (None = any genre)."""
+    if raw_value in (None, "", "any", "all"):
+        return None
+    try:
+        genre_id = int(raw_value)
+    except (TypeError, ValueError):
+        return None
+    return genre_id if genre_id > 0 else None
+
+
+def get_movies_list(mode, region, site_language, original_language, days_ahead,
+                    genre_id=None):
     """Return the deduped + filtered movie list for the given mode and filters.
 
     Results are cached for CACHE_TTL_SECONDS. Sorting/search are applied later.
@@ -173,7 +199,7 @@ def get_movies_list(mode, region, site_language, original_language, days_ahead):
     mode = normalize_mode(mode)
     tmdb_language = SITE_LANGUAGE_MAP.get(site_language, "en-US")
     days_key = days_ahead if mode == MODE_UPCOMING else 0
-    cache_key = (mode, region, tmdb_language, original_language, days_key)
+    cache_key = (mode, region, tmdb_language, original_language, days_key, genre_id or 0)
 
     now = time.time()
     cached = MOVIES_LIST_CACHE.get(cache_key)
@@ -185,18 +211,19 @@ def get_movies_list(mode, region, site_language, original_language, days_ahead):
 
     if mode == MODE_NOW_PLAYING:
         entry = _fetch_now_playing_list(
-            region, tmdb_language, original_language, now
+            region, tmdb_language, original_language, genre_id, now
         )
     else:
         entry = _fetch_upcoming_list(
-            region, tmdb_language, original_language, days_ahead, now
+            region, tmdb_language, original_language, days_ahead, genre_id, now
         )
 
     MOVIES_LIST_CACHE[cache_key] = entry
     return entry
 
 
-def _fetch_upcoming_list(region, tmdb_language, original_language, days_ahead, now):
+def _fetch_upcoming_list(region, tmdb_language, original_language, days_ahead,
+                         genre_id, now):
     """Upcoming mode: theatrical releases from today through today + daysAhead."""
     today = date.today()
     window_end = today + timedelta(days=days_ahead)
@@ -216,6 +243,8 @@ def _fetch_upcoming_list(region, tmdb_language, original_language, days_ahead, n
         }
         if original_language:
             discover_params["with_original_language"] = original_language
+        if genre_id:
+            discover_params["with_genres"] = str(genre_id)
 
         data = tmdb_get("/discover/movie", **discover_params)
         results = data.get("results", [])
@@ -258,7 +287,7 @@ def _fetch_upcoming_list(region, tmdb_language, original_language, days_ahead, n
     }
 
 
-def _fetch_now_playing_list(region, tmdb_language, original_language, now):
+def _fetch_now_playing_list(region, tmdb_language, original_language, genre_id, now):
     """Now in Theaters: region-specific movies in theaters within the last 60 days."""
     today = date.today()
     window_start = today - timedelta(days=NOW_PLAYING_MAX_AGE_DAYS)
@@ -289,6 +318,8 @@ def _fetch_now_playing_list(region, tmdb_language, original_language, now):
     candidates = []
     for movie in unique_movies:
         if original_language and movie.get("original_language") != original_language:
+            continue
+        if genre_id and genre_id not in (movie.get("genre_ids") or []):
             continue
         if not passes_filters(movie):
             continue
@@ -351,10 +382,12 @@ def _fetch_now_playing_list(region, tmdb_language, original_language, now):
 
 
 def fetch_upcoming(mode, region, site_language, original_language, days_ahead,
-                   sort_by, sort_order):
+                   genre_id, sort_by, sort_order):
     """Sort + trim the (cached) filtered list into the API response shape."""
     mode = normalize_mode(mode)
-    data = get_movies_list(mode, region, site_language, original_language, days_ahead)
+    data = get_movies_list(
+        mode, region, site_language, original_language, days_ahead, genre_id
+    )
 
     # Build a stable pool first: the most relevant MAX_MOVIES by popularity. This
     # keeps the returned set identical regardless of sort, so the client can
@@ -384,6 +417,7 @@ def fetch_upcoming(mode, region, site_language, original_language, days_ahead,
             "posterUrl": image_url(m.get("poster_path")),
             "backdropUrl": image_url(m.get("backdrop_path"), IMG_BACKDROP_URL),
             "originalLanguage": m.get("original_language"),
+            "genreIds": list(m.get("genre_ids") or []),
             "genres": [
                 genre_map[gid]
                 for gid in (m.get("genre_ids") or [])
@@ -400,6 +434,8 @@ def fetch_upcoming(mode, region, site_language, original_language, days_ahead,
             "region": region,
             "siteLanguage": site_language,
             "originalLanguage": original_language or "any",
+            "genre": genre_id or "any",
+            "availableGenres": get_genre_list(site_language),
             "daysAhead": days_ahead if mode == MODE_UPCOMING else None,
             "windowStart": data["windowStart"],
             "windowEnd": data["windowEnd"],
@@ -1013,6 +1049,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 self.send_static(path[len("/static/"):])
             elif path == "/api/upcoming-movies":
                 self.handle_upcoming(query)
+            elif path == "/api/genres":
+                self.handle_genres(query)
             elif path.startswith("/api/movie/"):
                 self.handle_movie_detail(path[len("/api/movie/"):], query)
             else:
@@ -1028,6 +1066,7 @@ class AppHandler(BaseHTTPRequestHandler):
         site_language = query.get("siteLanguage", ["en"])[0] or "en"
         original_language = query.get("originalLanguage", [""])[0] or ""
         days_ahead = clamp_days_ahead(query.get("daysAhead", ["60"])[0])
+        genre_id = parse_genre_id(query.get("genre", [""])[0])
         sort_by = query.get("sortBy", ["release"])[0]
         sort_order = query.get("sortOrder", ["asc"])[0]
 
@@ -1039,7 +1078,8 @@ class AppHandler(BaseHTTPRequestHandler):
             sort_order = "asc"
 
         result = fetch_upcoming(
-            mode, region, site_language, original_language, days_ahead, sort_by, sort_order
+            mode, region, site_language, original_language, days_ahead,
+            genre_id, sort_by, sort_order
         )
 
         meta = result["meta"]
@@ -1049,6 +1089,7 @@ class AppHandler(BaseHTTPRequestHandler):
             f"{source} "
             f"region={meta['region']} "
             f"originalLanguage={meta['originalLanguage']} "
+            f"genre={meta.get('genre')} "
             f"siteLanguage={meta['siteLanguage']} "
             f"daysAhead={meta.get('daysAhead')} "
             f"pages={meta['pagesFetched']} "
@@ -1059,6 +1100,10 @@ class AppHandler(BaseHTTPRequestHandler):
         )
 
         self.send_json(result)
+
+    def handle_genres(self, query):
+        site_language = query.get("siteLanguage", ["en"])[0] or "en"
+        self.send_json({"genres": get_genre_list(site_language)})
 
     def handle_movie_detail(self, raw_id, query):
         try:
