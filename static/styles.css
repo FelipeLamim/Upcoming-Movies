@@ -490,6 +490,8 @@ h1 .accent { font-style: italic; color: var(--gold); }
 }
 
 .drawer-grabber,
+.drawer-grabber-wrap,
+.drawer-drag-area,
 .drawer-header,
 .drawer-footer,
 .drawer-close { display: none; }
@@ -567,11 +569,25 @@ h1 .accent { font-style: italic; color: var(--gold); }
     body.drawer-open .drawer-overlay { opacity: 1; pointer-events: auto; }
     body.drawer-open { overflow: hidden; }
 
+    .drawer-drag-area {
+        display: block;
+        flex-shrink: 0;
+        touch-action: none;
+        cursor: grab;
+    }
+    .drawer-drag-area.is-dragging { cursor: grabbing; }
+
+    .drawer-grabber-wrap {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 10px 0 6px;
+    }
+
     .drawer-grabber {
         display: block;
         width: 42px;
         height: 4px;
-        margin: 10px auto 2px;
         border-radius: 999px;
         background: var(--border-strong);
     }
@@ -579,8 +595,10 @@ h1 .accent { font-style: italic; color: var(--gold); }
     .drawer-header {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        padding: 6px 20px 16px;
+        justify-content: center;
+        position: relative;
+        min-height: 48px;
+        padding: 4px 56px 14px;
         border-bottom: 1px solid var(--border);
     }
 
@@ -589,22 +607,31 @@ h1 .accent { font-style: italic; color: var(--gold); }
         font-family: "Playfair Display", Georgia, serif;
         font-size: 1.3rem;
         font-weight: 700;
+        line-height: 1.2;
+        text-align: center;
     }
 
     .drawer-close {
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        position: absolute;
+        right: 16px;
+        top: 50%;
+        transform: translateY(-50%);
         width: 36px;
         height: 36px;
+        padding: 0;
         border: 1px solid var(--border);
         border-radius: 50%;
         background: var(--surface);
         color: var(--text);
-        font-size: 1.5rem;
-        line-height: 1;
+        line-height: 0;
         cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
     }
+
+    .drawer-close svg { display: block; }
 
     .drawer-body {
         padding: 18px 20px;

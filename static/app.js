@@ -151,9 +151,11 @@
         anticipatedSection: document.getElementById("anticipated-section"),
         anticipatedGrid: document.getElementById("anticipated-grid"),
         catalog: document.getElementById("catalog"),
+        page: document.querySelector(".page"),
         filtersTrigger: document.getElementById("filters-trigger"),
         filtersSummary: document.getElementById("filters-summary"),
         filtersDrawer: document.getElementById("filters-drawer"),
+        drawerDragArea: document.getElementById("drawer-drag-area"),
         drawerOverlay: document.getElementById("drawer-overlay"),
         drawerClose: document.getElementById("drawer-close"),
         drawerApply: document.getElementById("drawer-apply"),
@@ -378,18 +380,39 @@
 
     let activeBackdrop = 0;
     let currentBackdropUrl = null;
+    let backdropRequestId = 0;
+    const backdropLoadCache = new Map();
+
+    function preloadBackdrop(url) {
+        if (!url) return Promise.resolve(null);
+        if (backdropLoadCache.has(url)) return backdropLoadCache.get(url);
+        const promise = new Promise(function (resolve) {
+            const img = new Image();
+            img.onload = function () { resolve(url); };
+            img.onerror = function () { resolve(null); };
+            img.src = url;
+        });
+        backdropLoadCache.set(url, promise);
+        return promise;
+    }
 
     function showBackdrop(url) {
         if (!url || url === currentBackdropUrl) return;
-        currentBackdropUrl = url;
-        const next = 1 - activeBackdrop;
-        els.backdrops[next].style.backgroundImage = "url('" + url + "')";
-        els.backdrops[next].classList.add("is-visible");
-        els.backdrops[activeBackdrop].classList.remove("is-visible");
-        activeBackdrop = next;
+        const requestId = ++backdropRequestId;
+        preloadBackdrop(url).then(function (loadedUrl) {
+            if (requestId !== backdropRequestId || !loadedUrl) return;
+            if (loadedUrl === currentBackdropUrl) return;
+            currentBackdropUrl = loadedUrl;
+            const next = 1 - activeBackdrop;
+            els.backdrops[next].style.backgroundImage = "url('" + loadedUrl + "')";
+            els.backdrops[next].classList.add("is-visible");
+            els.backdrops[activeBackdrop].classList.remove("is-visible");
+            activeBackdrop = next;
+        });
     }
 
     function clearBackdrop() {
+        backdropRequestId++;
         currentBackdropUrl = null;
         els.backdrops.forEach(function (layer) {
             layer.classList.remove("is-visible");
@@ -398,11 +421,17 @@
 
     function preloadBackdrops(movies) {
         movies.forEach(function (movie) {
-            if (movie.backdropUrl) {
-                const img = new Image();
-                img.src = movie.backdropUrl;
-            }
+            if (movie.backdropUrl) preloadBackdrop(movie.backdropUrl);
         });
+    }
+
+    function handleCardBackdropHover(event) {
+        const card = event.target.closest(".card-link[data-backdrop]");
+        if (card) showBackdrop(card.dataset.backdrop);
+    }
+
+    function handlePageBackdropLeave(event) {
+        if (!els.page.contains(event.relatedTarget)) clearBackdrop();
     }
 
     // ---- Rendering -------------------------------------------------------
@@ -692,11 +721,64 @@
     function openDrawer() {
         document.body.classList.add("drawer-open");
         els.filtersTrigger.setAttribute("aria-expanded", "true");
+        resetDrawerTransform();
     }
 
     function closeDrawer() {
         document.body.classList.remove("drawer-open");
         els.filtersTrigger.setAttribute("aria-expanded", "false");
+        resetDrawerTransform();
+    }
+
+    function resetDrawerTransform() {
+        els.filtersDrawer.style.transition = "";
+        els.filtersDrawer.style.transform = "";
+        if (els.drawerDragArea) {
+            els.drawerDragArea.classList.remove("is-dragging");
+        }
+    }
+
+    function initDrawerDrag() {
+        if (!els.drawerDragArea) return;
+
+        let startY = 0;
+        let dragging = false;
+        const closeThreshold = 72;
+
+        function pointerY(event) {
+            return event.touches ? event.touches[0].clientY : event.clientY;
+        }
+
+        function onStart(event) {
+            if (!isDrawerOpen()) return;
+            dragging = true;
+            startY = pointerY(event);
+            els.drawerDragArea.classList.add("is-dragging");
+            els.filtersDrawer.style.transition = "none";
+        }
+
+        function onMove(event) {
+            if (!dragging) return;
+            const delta = Math.max(0, pointerY(event) - startY);
+            els.filtersDrawer.style.transform = "translateY(" + delta + "px)";
+            if (event.cancelable) event.preventDefault();
+        }
+
+        function onEnd(event) {
+            if (!dragging) return;
+            dragging = false;
+            els.drawerDragArea.classList.remove("is-dragging");
+            const delta = (event.changedTouches
+                ? event.changedTouches[0].clientY
+                : event.clientY) - startY;
+            resetDrawerTransform();
+            if (delta >= closeThreshold) closeDrawer();
+        }
+
+        els.drawerDragArea.addEventListener("touchstart", onStart, { passive: true });
+        els.drawerDragArea.addEventListener("touchmove", onMove, { passive: false });
+        els.drawerDragArea.addEventListener("touchend", onEnd);
+        els.drawerDragArea.addEventListener("touchcancel", onEnd);
     }
 
     function isDrawerOpen() {
@@ -780,14 +862,13 @@
         if (e.matches && isDrawerOpen()) closeDrawer();
     });
 
-    // Backdrop hover via event delegation for performance.
-    els.list.addEventListener("mouseover", function (event) {
-        const card = event.target.closest(".card-link");
-        if (card && els.list.contains(card)) {
-            showBackdrop(card.dataset.backdrop);
-        }
-    });
-    els.list.addEventListener("mouseleave", clearBackdrop);
+    // Backdrop hover via delegation on .page (catalog + most anticipated cards).
+    if (els.page) {
+        els.page.addEventListener("mouseover", handleCardBackdropHover);
+        els.page.addEventListener("mouseleave", handlePageBackdropLeave);
+    }
+
+    initDrawerDrag();
 
     // Hero call-to-action and scroll hint both jump to the catalog.
     els.exploreCta.addEventListener("click", scrollToCatalog);
