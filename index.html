@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upcoming Movies</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- Crossfading backdrop layers for the hover effect (behind everything). -->
+    <div class="backdrop-layers" aria-hidden="true">
+        <div class="backdrop" id="backdrop-a"></div>
+        <div class="backdrop" id="backdrop-b"></div>
+    </div>
+
+    <!-- Full-screen cinematic hero -->
+    <section class="hero" id="hero">
+        <div class="hero-bg" id="hero-bg"></div>
+        <div class="hero-overlay"></div>
+        <div class="hero-content">
+            <p class="eyebrow" data-i18n="heroEyebrow">In theaters soon</p>
+            <h1 class="hero-title" data-i18n="heroTitle">Find out which movies are coming next.</h1>
+            <p class="hero-sub" data-i18n="heroSubtitle">
+                Discover upcoming theatrical releases — trailers, cast, and crew, all in one place.
+            </p>
+            <button type="button" class="cta" id="explore-cta" data-i18n="cta">Explore Upcoming Movies</button>
+            <p class="hero-caption" id="hero-caption"></p>
+        </div>
+        <button type="button" class="hero-scroll" id="hero-scroll" aria-label="Scroll to movies">
+            <span></span>
+        </button>
+    </section>
+
+    <div class="page">
+        <!-- Featured release -->
+        <section class="featured" id="featured-section" hidden></section>
+
+        <!-- Most anticipated -->
+        <section class="anticipated" id="anticipated-section" hidden>
+            <h2 class="section-heading" data-i18n="mostAnticipated">Most Anticipated</h2>
+            <div class="anticipated-grid" id="anticipated-grid"></div>
+        </section>
+
+        <!-- Catalog: search, filters, sorting, and the full grid -->
+        <section class="catalog" id="catalog">
+            <header class="catalog-header">
+                <h2 class="section-heading" data-i18n="browseAll">Browse all upcoming</h2>
+                <p class="subtitle" data-i18n="subtitle">
+                    A curated selection of films arriving in theaters soon.
+                </p>
+            </header>
+
+            <div class="controls">
+                <!-- Search: always visible (desktop + mobile) -->
+                <div class="control-row control-row--search">
+                    <label class="control control--search">
+                        <span data-i18n="search">Search</span>
+                        <input type="search" id="search" autocomplete="off"
+                               placeholder="Search by title…">
+                    </label>
+                </div>
+
+                <!-- Mobile-only trigger that opens the filters drawer -->
+                <button type="button" class="filters-trigger" id="filters-trigger"
+                        aria-haspopup="dialog" aria-expanded="false" aria-controls="filters-drawer">
+                    <span class="filters-trigger__main">
+                        <svg class="filters-trigger__icon" viewBox="0 0 24 24" width="18" height="18"
+                             fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <path d="M3 5h18M6 12h12M10 19h4" stroke-linecap="round"/>
+                        </svg>
+                        <span data-i18n="filtersButton">Filters</span>
+                    </span>
+                    <span class="filters-trigger__summary" id="filters-summary"></span>
+                </button>
+
+                <!-- Filters: inline on desktop/tablet, bottom-sheet drawer on mobile -->
+                <div class="filters-drawer" id="filters-drawer" aria-labelledby="drawer-title">
+                    <div class="drawer-header">
+                        <span class="drawer-grabber" aria-hidden="true"></span>
+                        <h3 class="drawer-title" id="drawer-title" data-i18n="filtersTitle">Filters</h3>
+                        <button type="button" class="drawer-close" id="drawer-close"
+                                aria-label="Close">&times;</button>
+                    </div>
+
+                    <div class="drawer-body">
+                        <!-- Discovery filters -->
+                        <div class="control-row">
+                            <label class="control">
+                                <span data-i18n="region">Region</span>
+                                <select id="region"></select>
+                            </label>
+                            <label class="control">
+                                <span data-i18n="originalLanguage">Film language</span>
+                                <select id="original-language"></select>
+                            </label>
+                            <label class="control">
+                                <span data-i18n="daysAhead">Days ahead</span>
+                                <input type="number" id="days-ahead" min="1" max="365" step="1" value="60">
+                            </label>
+                            <label class="control">
+                                <span data-i18n="siteLanguage">Website language</span>
+                                <select id="site-language">
+                                    <option value="en">English</option>
+                                    <option value="pt">Português</option>
+                                </select>
+                            </label>
+                        </div>
+
+                        <!-- Sorting -->
+                        <div class="control-row control-row--sort">
+                            <label class="control">
+                                <span data-i18n="sortBy">Sort by</span>
+                                <select id="sort-field">
+                                    <option value="release" data-i18n="releaseDate">Release date</option>
+                                    <option value="popularity" data-i18n="popularity">Popularity</option>
+                                </select>
+                            </label>
+                            <label class="control">
+                                <span data-i18n="order">Order</span>
+                                <select id="sort-order">
+                                    <option value="asc" data-i18n="ascending">Ascending</option>
+                                    <option value="desc" data-i18n="descending">Descending</option>
+                                </select>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="drawer-footer">
+                        <button type="button" class="drawer-btn drawer-btn--ghost" id="drawer-reset"
+                                data-i18n="reset">Reset</button>
+                        <button type="button" class="drawer-btn drawer-btn--primary" id="drawer-apply"
+                                data-i18n="apply">Apply</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="meta-row" id="meta-row"></div>
+
+            <main>
+                <div class="movie-list" id="movie-list"></div>
+                <div class="status" id="status" hidden></div>
+                <div class="load-more-wrap">
+                    <button type="button" class="load-more" id="load-more" hidden
+                            data-i18n="loadMore">Load more</button>
+                </div>
+            </main>
+        </section>
+
+        <footer>
+            <span data-i18n="footer">Data from The Movie Database (TMDb).</span>
+        </footer>
+
+        <!-- Dark blurred overlay behind the mobile filters drawer. Kept inside
+             .page so it shares the drawer's stacking context (drawer z-index
+             must beat the overlay; otherwise the overlay captures all taps). -->
+        <div class="drawer-overlay" id="drawer-overlay"></div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,1158 @@
+:root {
+    color-scheme: dark;
+    --bg: #07080d;
+    --bg-soft: #0d1018;
+    --surface: rgba(20, 24, 34, 0.72);
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --text: #f5f7fb;
+    --muted: #9aa3b2;
+    --gold: #d4b06a;
+    --gold-soft: rgba(212, 176, 106, 0.16);
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--text);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background:
+        radial-gradient(1200px 600px at 15% -10%, rgba(212, 176, 106, 0.10), transparent 60%),
+        radial-gradient(900px 500px at 100% 0%, rgba(88, 110, 255, 0.10), transparent 55%),
+        linear-gradient(180deg, var(--bg-soft), var(--bg));
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+
+/* ---- Crossfading backdrop hover layers ---- */
+
+.backdrop-layers {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.backdrop {
+    position: absolute;
+    inset: -40px;            /* bleed so the blur has no hard edges */
+    background-size: cover;
+    background-position: center;
+    filter: blur(34px) saturate(1.1);
+    opacity: 0;
+    transform: scale(1.08);
+    transition: opacity 0.7s ease;
+    will-change: opacity;
+}
+
+.backdrop.is-visible { opacity: 0.22; }
+
+.page {
+    position: relative;
+    z-index: 1;
+    width: min(1240px, calc(100% - 40px));
+    margin: 0 auto;
+    padding: 72px 0 96px;
+}
+
+/* ---- Full-screen cinematic hero ---- */
+
+.hero {
+    position: relative;
+    z-index: 1;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 0 max(40px, calc((100% - 1240px) / 2 + 20px));
+    overflow: hidden;
+}
+
+.hero-bg {
+    position: absolute;
+    inset: 0;
+    z-index: -2;
+    background-size: cover;
+    background-position: center;
+    opacity: 0;
+    transform: scale(1.06);
+    transition: opacity 1.1s ease, transform 9s ease;
+    will-change: opacity;
+}
+
+.hero-bg.loaded { opacity: 1; transform: scale(1); }
+
+.hero-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background:
+        linear-gradient(180deg, rgba(7, 8, 13, 0.5) 0%, rgba(7, 8, 13, 0.3) 35%, rgba(7, 8, 13, 0.85) 82%, var(--bg) 100%),
+        linear-gradient(90deg, rgba(7, 8, 13, 0.88) 0%, rgba(7, 8, 13, 0.25) 58%, transparent 100%);
+}
+
+.hero-content { max-width: 720px; }
+
+.hero-title {
+    margin: 0 0 18px;
+    font-family: "Playfair Display", Georgia, serif;
+    font-weight: 800;
+    font-size: clamp(2.6rem, 6vw, 5rem);
+    line-height: 1.02;
+    letter-spacing: -0.02em;
+    text-shadow: 0 6px 34px rgba(0, 0, 0, 0.55);
+}
+
+.hero-sub {
+    margin: 0 0 34px;
+    max-width: 560px;
+    color: #d6dbe5;
+    font-size: clamp(1rem, 1.6vw, 1.25rem);
+    line-height: 1.7;
+}
+
+.hero-caption {
+    margin: 24px 0 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+    letter-spacing: 0.04em;
+}
+
+.cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 15px 30px;
+    border: 1px solid rgba(212, 176, 106, 0.5);
+    border-radius: 999px;
+    background: var(--gold);
+    color: #1a1407;
+    font-family: inherit;
+    font-size: 0.98rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    text-decoration: none;
+    box-shadow: 0 14px 40px rgba(212, 176, 106, 0.25);
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.cta:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 18px 50px rgba(212, 176, 106, 0.42);
+}
+
+.hero-scroll {
+    position: absolute;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%);
+    width: 34px;
+    height: 34px;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+}
+
+.hero-scroll span {
+    display: block;
+    width: 14px;
+    height: 14px;
+    margin: 0 auto;
+    border-right: 2px solid var(--muted);
+    border-bottom: 2px solid var(--muted);
+    transform: rotate(45deg);
+    animation: heroBounce 2s infinite ease-in-out;
+}
+
+@keyframes heroBounce {
+    0%, 100% { transform: rotate(45deg) translate(0, 0); opacity: 0.6; }
+    50% { transform: rotate(45deg) translate(4px, 4px); opacity: 1; }
+}
+
+/* ---- Section headings ---- */
+
+.section-heading {
+    margin: 0 0 8px;
+    font-family: "Playfair Display", Georgia, serif;
+    font-size: clamp(1.6rem, 3vw, 2.4rem);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+
+/* ---- Featured release ---- */
+
+.featured { margin-bottom: 76px; }
+
+.featured-card {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr;
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    overflow: hidden;
+    background: var(--surface);
+    box-shadow: 0 30px 70px rgba(0, 0, 0, 0.5);
+}
+
+.featured-media {
+    position: relative;
+    min-height: 320px;
+    background-size: cover;
+    background-position: center;
+}
+
+.featured-media::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 35%, rgba(20, 24, 34, 0.92) 100%);
+}
+
+.featured-body {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 44px;
+}
+
+.featured-label {
+    margin: 0 0 14px;
+    color: var(--gold);
+    font-size: 0.74rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+}
+
+.featured-title {
+    margin: 0 0 12px;
+    font-family: "Playfair Display", Georgia, serif;
+    font-size: clamp(1.8rem, 3vw, 2.6rem);
+    line-height: 1.1;
+}
+
+.featured-body .release-date {
+    color: var(--muted);
+    margin-bottom: 6px;
+}
+
+.featured-overview {
+    margin: 16px 0 30px;
+    max-width: 50ch;
+    color: var(--muted);
+    line-height: 1.7;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* ---- Most anticipated ---- */
+
+.anticipated { margin-bottom: 84px; }
+
+.anticipated .section-heading { margin-bottom: 24px; }
+
+.anticipated-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 26px;
+}
+
+/* ---- Catalog ---- */
+
+.catalog { scroll-margin-top: 16px; }
+
+.catalog-header {
+    margin-bottom: 26px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+}
+
+/* Breathing room between the meta chips and the first row of posters. */
+.catalog main { margin-top: clamp(28px, 4vw, 52px); }
+
+@media (max-width: 760px) {
+    .featured-card { grid-template-columns: 1fr; }
+    .featured-media { min-height: 220px; }
+    .featured-media::after {
+        background: linear-gradient(180deg, transparent 40%, rgba(20, 24, 34, 0.92) 100%);
+    }
+}
+
+.eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 22px;
+    padding: 7px 16px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--gold-soft);
+    color: var(--gold);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+}
+
+.eyebrow::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--gold);
+    box-shadow: 0 0 12px var(--gold);
+}
+
+h1 {
+    margin: 0 0 18px;
+    font-family: "Playfair Display", Georgia, serif;
+    font-weight: 700;
+    font-size: clamp(2.6rem, 6vw, 4.6rem);
+    line-height: 1.02;
+    letter-spacing: -0.02em;
+}
+
+h1 .accent { font-style: italic; color: var(--gold); }
+
+.subtitle {
+    max-width: 620px;
+    margin: 0;
+    color: var(--muted);
+    font-size: 1.05rem;
+    line-height: 1.7;
+}
+
+.meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 28px;
+}
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.chip span { color: var(--muted); }
+
+/* ---- Controls (search + filters + sorting) ---- */
+
+.controls {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    margin-top: 30px;
+}
+
+.control-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 20px;
+    align-items: flex-end;
+}
+
+/* Subtle divider before the sorting row to group it visually. */
+.control-row--sort {
+    margin-top: 4px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+}
+
+.control {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+}
+
+.control--search { flex: 1; min-width: 260px; }
+
+.control--search input[type="search"] {
+    width: 100%;
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 13px 18px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.95rem;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: normal;
+    transition: border-color 0.3s ease;
+}
+
+.control--search input[type="search"]::placeholder { color: var(--muted); }
+
+.control--search input[type="search"]:hover,
+.control--search input[type="search"]:focus {
+    border-color: var(--border-strong);
+    outline: none;
+}
+
+.control select,
+.control input[type="number"] {
+    appearance: none;
+    -webkit-appearance: none;
+    min-width: 150px;
+    padding: 11px 38px 11px 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background-color: var(--surface);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.9rem;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: normal;
+    cursor: pointer;
+    transition: border-color 0.3s ease;
+}
+
+.control select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239aa3b2' d='M6 8L2 4h8z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+}
+
+.control input[type="number"] {
+    padding-right: 16px;
+    cursor: text;
+}
+
+.control select:hover,
+.control select:focus,
+.control input:hover,
+.control input:focus {
+    border-color: var(--border-strong);
+    outline: none;
+}
+
+.control select option {
+    background: var(--bg-soft);
+    color: var(--text);
+}
+
+/* ---- Filters drawer (mobile) -------------------------------------------------
+   Desktop/tablet: the trigger, overlay, and drawer chrome are hidden, and the
+   .filters-drawer is just an inline wrapper around the filter + sort rows so the
+   layout is identical to before. The mobile rules live in the media query. */
+
+.filters-trigger { display: none; }
+
+.filters-drawer {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.drawer-body {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.drawer-grabber,
+.drawer-header,
+.drawer-footer,
+.drawer-close { display: none; }
+
+.drawer-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    background: rgba(5, 6, 10, 0.6);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+}
+
+@media (max-width: 600px) {
+    /* Compact trigger replaces the inline filter rows. */
+    .filters-trigger {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        width: 100%;
+        padding: 13px 18px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+        color: var(--text);
+        font-family: inherit;
+        font-size: 0.95rem;
+        font-weight: 600;
+        cursor: pointer;
+        text-align: left;
+    }
+
+    .filters-trigger__main {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        flex-shrink: 0;
+    }
+
+    .filters-trigger__icon { color: var(--gold); }
+
+    .filters-trigger__summary {
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+    }
+
+    /* The drawer becomes a bottom sheet. */
+    .filters-drawer {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 60;
+        max-height: 88vh;
+        gap: 0;
+        background: var(--bg-soft);
+        border-top: 1px solid var(--border-strong);
+        border-radius: 22px 22px 0 0;
+        box-shadow: 0 -24px 70px rgba(0, 0, 0, 0.65);
+        transform: translateY(100%);
+        transition: transform 0.34s cubic-bezier(0.2, 0.7, 0.2, 1);
+        overscroll-behavior: contain;
+    }
+
+    body.drawer-open .filters-drawer { transform: translateY(0); }
+    body.drawer-open .drawer-overlay { opacity: 1; pointer-events: auto; }
+    body.drawer-open { overflow: hidden; }
+
+    .drawer-grabber {
+        display: block;
+        width: 42px;
+        height: 4px;
+        margin: 10px auto 2px;
+        border-radius: 999px;
+        background: var(--border-strong);
+    }
+
+    .drawer-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 20px 16px;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .drawer-title {
+        margin: 0;
+        font-family: "Playfair Display", Georgia, serif;
+        font-size: 1.3rem;
+        font-weight: 700;
+    }
+
+    .drawer-close {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        border: 1px solid var(--border);
+        border-radius: 50%;
+        background: var(--surface);
+        color: var(--text);
+        font-size: 1.5rem;
+        line-height: 1;
+        cursor: pointer;
+    }
+
+    .drawer-body {
+        padding: 18px 20px;
+        gap: 20px;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        flex: 1;
+    }
+
+    /* Stack each control full width inside the drawer. */
+    .drawer-body .control-row { flex-direction: column; align-items: stretch; gap: 16px; }
+    .drawer-body .control { width: 100%; }
+    .drawer-body .control select,
+    .drawer-body .control input[type="number"] { width: 100%; min-width: 0; }
+
+    .drawer-footer {
+        display: flex;
+        gap: 12px;
+        padding: 14px 20px calc(16px + env(safe-area-inset-bottom, 0px));
+        border-top: 1px solid var(--border);
+        background: var(--bg-soft);
+    }
+
+    .drawer-btn {
+        flex: 1;
+        padding: 13px 18px;
+        border-radius: 12px;
+        font-family: inherit;
+        font-size: 0.95rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+    }
+
+    .drawer-btn--ghost {
+        border: 1px solid var(--border-strong);
+        background: transparent;
+        color: var(--text);
+    }
+
+    .drawer-btn--primary {
+        border: 1px solid var(--gold);
+        background: var(--gold);
+        color: #1a1407;
+    }
+
+    /* Keep the search field comfortable on very small screens. */
+    .control--search { min-width: 0; }
+}
+
+/* ---- Movie grid ---- */
+
+.movie-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+    gap: 28px;
+}
+
+.card-link { display: block; height: 100%; }
+
+.movie-card {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    background: var(--surface);
+    backdrop-filter: blur(14px);
+    box-shadow: 0 22px 50px rgba(0, 0, 0, 0.45);
+    transition: transform 0.45s cubic-bezier(0.2, 0.7, 0.2, 1),
+                border-color 0.45s ease,
+                box-shadow 0.45s ease;
+}
+
+.card-link:hover .movie-card,
+.card-link:focus-visible .movie-card {
+    transform: translateY(-10px) scale(1.025);
+    border-color: var(--gold-soft);
+    box-shadow: 0 40px 80px rgba(0, 0, 0, 0.62);
+}
+
+.poster { position: relative; overflow: hidden; }
+
+.poster img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
+    background: #15181f;
+    transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.card-link:hover .poster img { transform: scale(1.06); }
+
+.poster::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, transparent 55%, rgba(7, 8, 13, 0.85));
+}
+
+.rating {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 11px;
+    border-radius: 999px;
+    background: rgba(7, 8, 13, 0.7);
+    border: 1px solid var(--border-strong);
+    color: var(--gold);
+    font-size: 0.8rem;
+    font-weight: 700;
+    backdrop-filter: blur(6px);
+}
+
+.movie-info {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    padding: 22px;
+}
+
+.release-date {
+    margin: 0 0 9px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 0.76rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+}
+
+.movie-card h2 {
+    margin: 0 0 8px;
+    font-family: "Playfair Display", Georgia, serif;
+    font-size: 1.25rem;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.genres {
+    margin: 0 0 12px;
+    color: var(--gold);
+    font-size: 0.74rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    opacity: 0.85;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.overview {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+    line-height: 1.55;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* ---- Status messages (loading / empty / error) ---- */
+
+.status {
+    margin: 48px 0;
+    padding: 40px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 18px;
+    background: var(--surface);
+    color: var(--muted);
+    text-align: center;
+    font-size: 1rem;
+}
+
+.status.error { color: #ffb4b4; border-color: rgba(255, 120, 120, 0.4); }
+
+/* ---- Skeleton loaders (match real card dimensions to avoid layout shift) ---- */
+
+.movie-card.skeleton {
+    pointer-events: none;
+    transform: none !important;
+    box-shadow: none;
+}
+
+.skeleton-box,
+.skeleton-line {
+    position: relative;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.skeleton-box::after,
+.skeleton-line::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.08),
+        transparent
+    );
+    animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.poster.skeleton-box {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+}
+
+.skeleton-line {
+    height: 12px;
+    border-radius: 6px;
+    margin-bottom: 12px;
+}
+
+.skeleton-line--sm { width: 45%; }
+.skeleton-line--lg { width: 80%; height: 18px; }
+.skeleton-line:last-child { margin-bottom: 0; width: 60%; }
+
+@keyframes skeleton-shimmer {
+    100% { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .skeleton-box::after,
+    .skeleton-line::after { animation: none; }
+}
+
+/* ---- Load more ---- */
+
+.load-more-wrap {
+    display: flex;
+    justify-content: center;
+    margin-top: 40px;
+}
+
+.load-more {
+    padding: 13px 32px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.92rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    transition: border-color 0.25s ease, color 0.25s ease, transform 0.2s ease;
+}
+
+.load-more:hover {
+    border-color: var(--gold-soft);
+    color: var(--gold);
+    transform: translateY(-2px);
+}
+
+footer {
+    margin-top: 72px;
+    padding-top: 28px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+    text-align: center;
+}
+
+/* ---- Detail page ---- */
+
+.back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 36px;
+    padding: 9px 16px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: color 0.3s ease, border-color 0.3s ease;
+}
+
+.back-link:hover { color: var(--text); border-color: var(--border-strong); }
+
+.detail-hero {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 44px;
+    align-items: start;
+}
+
+/* Cinematic backdrop banner + Watch Trailer button are mobile-only. */
+.detail-backdrop { display: none; }
+.watch-trailer { display: none; }
+
+.detail-poster img {
+    width: 100%;
+    border-radius: 22px;
+    border: 1px solid var(--border);
+    box-shadow: 0 30px 70px rgba(0, 0, 0, 0.55);
+    background: #15181f;
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
+}
+
+.detail-poster .placeholder {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    border-radius: 22px;
+    border: 1px solid var(--border);
+    background: #15181f;
+    color: var(--muted);
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 24px;
+}
+
+.detail-title {
+    margin: 6px 0 8px;
+    font-family: "Playfair Display", Georgia, serif;
+    font-size: clamp(2rem, 4vw, 3.2rem);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+}
+
+.tagline {
+    margin: 0 0 22px;
+    color: var(--gold);
+    font-style: italic;
+    font-size: 1.05rem;
+}
+
+.detail-overview {
+    margin: 26px 0 0;
+    max-width: 640px;
+    color: #cfd5e0;
+    font-size: 1.02rem;
+    line-height: 1.75;
+}
+
+.section { margin-top: 64px; }
+#trailer { scroll-margin-top: 18px; }
+
+.section-title {
+    margin: 0 0 24px;
+    font-family: "Playfair Display", Georgia, serif;
+    font-size: 1.6rem;
+    font-weight: 600;
+}
+
+.trailer-frame {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: 18px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+
+.trailer-frame iframe {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+}
+
+.empty {
+    margin: 0;
+    padding: 28px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 16px;
+    background: var(--surface);
+    color: var(--muted);
+    text-align: center;
+}
+
+.cast-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 20px;
+}
+
+.cast-card {
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow: hidden;
+    background: var(--surface);
+}
+
+.cast-card img,
+.cast-card .photo-placeholder {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    background: #15181f;
+}
+
+.cast-card .photo-placeholder {
+    display: grid;
+    place-items: center;
+    font-family: "Playfair Display", Georgia, serif;
+    font-size: 1.8rem;
+    color: var(--muted);
+}
+
+.cast-body { padding: 14px 16px; }
+
+.cast-name { margin: 0 0 4px; font-size: 0.98rem; font-weight: 600; }
+
+.cast-character { margin: 0; color: var(--muted); font-size: 0.85rem; }
+
+.crew-groups {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 22px;
+}
+
+.crew-group {
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px 22px;
+    background: var(--surface);
+}
+
+.crew-role {
+    margin: 0 0 12px;
+    color: var(--gold);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+}
+
+.crew-names { margin: 0; line-height: 1.7; color: var(--text); }
+
+@media (max-width: 760px) {
+    .detail-hero { grid-template-columns: 1fr; gap: 28px; }
+    .detail-poster { max-width: 280px; }
+}
+
+@media (max-width: 560px) {
+    .page { padding: 48px 0 64px; }
+    .movie-list { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 18px; }
+}
+
+/* ---- Cinematic movie detail page on phones ---- */
+@media (max-width: 600px) {
+    .back-link { margin-bottom: 16px; }
+
+    /* Hero becomes a vertical, streaming-style layout. */
+    .detail-hero { display: block; position: relative; }
+
+    /* Full-bleed backdrop banner with a gradient fade into the page. */
+    .detail-backdrop {
+        display: block;
+        position: relative;
+        margin: 0 -20px;
+        height: 200px;
+        background-size: cover;
+        background-position: center;
+    }
+    .detail-backdrop::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+            180deg,
+            rgba(7, 8, 13, 0.1) 0%,
+            rgba(7, 8, 13, 0.55) 55%,
+            var(--bg) 100%
+        );
+    }
+
+    /* Smaller, supporting poster overlapping the backdrop fade. */
+    .detail-poster {
+        position: relative;
+        z-index: 1;
+        width: 118px;
+        max-width: 118px;
+        margin: -66px 0 0;
+    }
+    .detail-poster img,
+    .detail-poster .placeholder {
+        border-radius: 14px;
+        box-shadow: 0 16px 38px rgba(0, 0, 0, 0.6);
+    }
+    .detail-poster .placeholder { aspect-ratio: 2 / 3; font-size: 0.8rem; padding: 12px; }
+
+    .detail-main { margin-top: 16px; }
+
+    .detail-main .eyebrow { margin-bottom: 14px; }
+    .detail-title { font-size: 1.75rem; margin: 4px 0 6px; }
+    .tagline { font-size: 0.98rem; margin-bottom: 0; }
+
+    .detail-main .meta-row { gap: 8px; margin-top: 16px; }
+    .detail-main .chip { padding: 7px 12px; font-size: 0.78rem; }
+
+    /* Prominent gold CTA to jump straight to the trailer. */
+    .watch-trailer {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        margin-top: 18px;
+        padding: 12px 22px;
+        border-radius: 999px;
+        background: var(--gold);
+        color: #1a1407;
+        font-size: 0.95rem;
+        font-weight: 700;
+        box-shadow: 0 14px 34px rgba(212, 176, 106, 0.28);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .watch-trailer:active { transform: scale(0.97); }
+
+    .detail-overview {
+        margin-top: 20px;
+        font-size: 0.98rem;
+        line-height: 1.65;
+    }
+
+    /* Tighter section rhythm so the trailer sits closer to the top. */
+    .section { margin-top: 40px; }
+    .section-title { font-size: 1.35rem; margin-bottom: 16px; }
+
+    /* Cast becomes a horizontal, full-bleed scroll row of compact cards. */
+    .cast-grid {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: 118px;
+        grid-template-columns: none;
+        gap: 12px;
+        overflow-x: auto;
+        scroll-snap-type: x proximity;
+        -webkit-overflow-scrolling: touch;
+        margin: 0 -20px;
+        padding: 2px 20px 10px;
+    }
+    .cast-card { scroll-snap-align: start; border-radius: 14px; }
+    .cast-body { padding: 9px 11px; }
+    .cast-name { font-size: 0.84rem; margin-bottom: 2px; }
+    .cast-character { font-size: 0.75rem; }
+
+    /* Crew cards: compact single column. */
+    .crew-groups { grid-template-columns: 1fr; gap: 12px; }
+    .crew-group { padding: 14px 16px; }
+}
