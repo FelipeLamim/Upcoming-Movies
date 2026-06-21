@@ -52,6 +52,9 @@
             footer: "Data from The Movie Database (TMDb).",
             modeUpcoming: "Upcoming Movies",
             modeNowPlaying: "Now in Theaters",
+            heroAiEyebrow: "Can't decide what to watch?",
+            heroAiText: "Get personalized recommendations based on your favorite movies, genres, directors, and mood.",
+            heroAiCta: "Try AI Recommendations",
             heroEyebrowNow: "Now in theaters",
             heroTitleNow: "See what's playing today.",
             heroSubtitleNow: "Browse films currently in theaters — trailers, cast, and crew, all in one place.",
@@ -125,6 +128,9 @@
             footer: "Dados do The Movie Database (TMDb).",
             modeUpcoming: "Próximos filmes",
             modeNowPlaying: "Nos cinemas",
+            heroAiEyebrow: "Não sabe o que assistir?",
+            heroAiText: "Receba recomendações personalizadas com base nos seus filmes, gêneros, diretores e humor favoritos.",
+            heroAiCta: "Experimente a IA",
             heroEyebrowNow: "Nos cinemas agora",
             heroTitleNow: "Veja o que está em cartaz hoje.",
             heroSubtitleNow: "Explore filmes em exibição nos cinemas — trailers, elenco e equipe, tudo em um só lugar.",
@@ -208,6 +214,7 @@
         heroBg: document.getElementById("hero-bg"),
         heroCaption: document.getElementById("hero-caption"),
         exploreCta: document.getElementById("explore-cta"),
+        heroAiCta: document.getElementById("hero-ai-cta"),
         heroScroll: document.getElementById("hero-scroll"),
         featuredSection: document.getElementById("featured-section"),
         anticipatedSection: document.getElementById("anticipated-section"),
@@ -233,6 +240,7 @@
         heroTitle: document.querySelector(".hero-title"),
         heroSubtitle: document.querySelector(".hero-sub"),
         aiRecommendToggle: document.getElementById("ai-recommend-toggle"),
+        aiRecommend: document.getElementById("ai-recommend"),
         aiRecommendPanel: document.getElementById("ai-recommend-panel"),
         aiRecommendForm: document.getElementById("ai-recommend-form"),
         aiRecommendInput: document.getElementById("ai-recommend-input"),
@@ -1217,15 +1225,36 @@
         }
     }
 
+    function openAiRecommendPanel() {
+        if (!els.aiRecommendPanel || !els.aiRecommendToggle) return;
+        els.aiRecommendPanel.hidden = false;
+        els.aiRecommendToggle.setAttribute("aria-expanded", "true");
+        if (els.catalog) {
+            els.catalog.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        window.setTimeout(function () {
+            if (els.aiRecommend) {
+                els.aiRecommend.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            }
+            if (els.aiRecommendInput) {
+                els.aiRecommendInput.focus({ preventScroll: true });
+            }
+        }, 350);
+    }
+
+    function scrollToAiRecommend() {
+        openAiRecommendPanel();
+    }
+
     function toggleAiRecommendPanel() {
         if (!els.aiRecommendPanel || !els.aiRecommendToggle) return;
         const isOpen = !els.aiRecommendPanel.hidden;
-        els.aiRecommendPanel.hidden = isOpen;
-        els.aiRecommendToggle.setAttribute("aria-expanded", String(!isOpen));
-        if (!isOpen) {
-            els.aiRecommendPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-            els.aiRecommendInput.focus();
+        if (isOpen) {
+            els.aiRecommendPanel.hidden = true;
+            els.aiRecommendToggle.setAttribute("aria-expanded", "false");
+            return;
         }
+        openAiRecommendPanel();
     }
 
     // Sort a copy of the loaded movies by the current sort controls. Runs purely
@@ -1733,6 +1762,9 @@
     // Hero call-to-action and scroll hint both jump to the catalog.
     els.exploreCta.addEventListener("click", scrollToCatalog);
     els.heroScroll.addEventListener("click", scrollToCatalog);
+    if (els.heroAiCta) {
+        els.heroAiCta.addEventListener("click", scrollToAiRecommend);
+    }
 
     if (els.aiRecommendToggle) {
         els.aiRecommendToggle.addEventListener("click", toggleAiRecommendPanel);
