@@ -83,6 +83,7 @@
             aiRecommendLoadingAnalyzing: "Finding the best matches…",
             aiRecommendStreamingIntro: "I'm looking through movies in theaters and coming soon…",
             aiRecommendError: "Could not get recommendations. Please try again.",
+            aiRecommendTimeout: "The recommendation request took too long. Please try again.",
             aiRecommendEmptyCatalog: "No movies found for this region and window. Try another region or a wider window.",
             aiRecommendReason: "Why it matches:",
         },
@@ -162,6 +163,7 @@
             aiRecommendLoadingAnalyzing: "Buscando as melhores opções…",
             aiRecommendStreamingIntro: "Estou analisando filmes em cartaz e em breve…",
             aiRecommendError: "Não foi possível obter recomendações. Tente novamente.",
+            aiRecommendTimeout: "A solicitação de recomendação demorou demais. Tente novamente.",
             aiRecommendEmptyCatalog: "Nenhum filme encontrado para esta região e período. Tente outra região ou um período maior.",
             aiRecommendReason: "Por que combina:",
         },
@@ -271,7 +273,12 @@
 
     const AI_DAYS_OPTIONS = [30, 60, 90, 120, 180, 365];
     const AI_CATALOG_CACHE_TTL_MS = 15 * 60 * 1000;
+    const AI_RECOMMEND_TIMEOUT_MS = 90000;
     const aiCatalogCache = new Map();
+    let aiRecommendInFlight = false;
+    let aiRecommendActiveController = null;
+    let aiRecommendTimedOut = false;
+    let aiRecommendTimeoutId = null;
     const DAYS_MIN = 1;
     const DAYS_MAX = 365;
     const DAYS_FALLBACK = 60;
@@ -604,7 +611,7 @@
         return [region, daysAhead, siteLanguage].join("|");
     }
 
-    async function fetchModeMoviesForAi(mode, region, daysAhead) {
+    async function fetchModeMoviesForAi(mode, region, daysAhead, signal) {
         const sortDefaults = getDefaultSort(mode);
         const params = new URLSearchParams({
             mode: mode,
@@ -617,7 +624,7 @@
         if (mode === "upcoming") {
             params.set("daysAhead", String(daysAhead));
         }
-        const response = await fetch("/api/upcoming-movies?" + params.toString());
+        const response = await fetch("/api/upcoming-movies?" + params.toString(), { signal: signal });
         if (!response.ok) {
             throw new Error(t("aiRecommendError"));
         }
@@ -639,7 +646,7 @@
         return Array.from(byId.values());
     }
 
-    async function fetchCombinedAiCatalog(region, daysAhead) {
+    async function fetchCombinedAiCatalog(region, daysAhead, signal) {
         const cacheKey = buildAiCatalogCacheKey(region, daysAhead);
         const cached = aiCatalogCache.get(cacheKey);
         if (cached && (Date.now() - cached.fetchedAt) < AI_CATALOG_CACHE_TTL_MS) {
@@ -647,8 +654,8 @@
         }
 
         const results = await Promise.all([
-            fetchModeMoviesForAi("nowPlaying", region, daysAhead),
-            fetchModeMoviesForAi("upcoming", region, daysAhead),
+            fetchModeMoviesForAi("nowPlaying", region, daysAhead, signal),
+            fetchModeMoviesForAi("upcoming", region, daysAhead, signal),
         ]);
         const combined = mergeCombinedAiCatalog(results[0], results[1]);
         aiCatalogCache.set(cacheKey, {
@@ -959,30 +966,41 @@
         }
     }
 
-    async function consumeRecommendSse(response, handlers) {
+    async function consumeRecommendSse(response, handlers, signal) {
         if (!response.body) {
             throw new Error(t("aiRecommendError"));
         }
         var reader = response.body.getReader();
         var decoder = new TextDecoder();
         var buffer = "";
-        while (true) {
-            var chunk = await reader.read();
-            if (chunk.done) break;
-            buffer += decoder.decode(chunk.value, { stream: true });
-            var boundary;
-            while ((boundary = buffer.indexOf("\n\n")) >= 0) {
-                var rawEvent = buffer.slice(0, boundary);
-                buffer = buffer.slice(boundary + 2);
-                parseRecommendSseEvent(rawEvent, handlers);
+        try {
+            while (true) {
+                if (signal && signal.aborted) {
+                    throw new DOMException("Aborted", "AbortError");
+                }
+                var chunk = await reader.read();
+                if (chunk.done) break;
+                buffer += decoder.decode(chunk.value, { stream: true });
+                var boundary;
+                while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+                    var rawEvent = buffer.slice(0, boundary);
+                    buffer = buffer.slice(boundary + 2);
+                    parseRecommendSseEvent(rawEvent, handlers);
+                }
             }
-        }
-        if (buffer.trim()) {
-            parseRecommendSseEvent(buffer, handlers);
+            if (buffer.trim()) {
+                parseRecommendSseEvent(buffer, handlers);
+            }
+        } finally {
+            try {
+                reader.cancel();
+            } catch (cancelError) {
+                /* ignore */
+            }
         }
     }
 
-    async function tryRecommendStream(payload) {
+    async function tryRecommendStream(payload, signal) {
         var response = await fetch("/api/recommend/stream", {
             method: "POST",
             headers: {
@@ -990,6 +1008,7 @@
                 Accept: "text/event-stream",
             },
             body: JSON.stringify(payload),
+            signal: signal,
         });
 
         if (response.status === 404) {
@@ -1029,7 +1048,7 @@
             onError: function (message) {
                 throw new Error(message || t("aiRecommendError"));
             },
-        });
+        }, signal);
 
         if (!finished) {
             throw new Error(t("aiRecommendError"));
@@ -1037,12 +1056,13 @@
         return true;
     }
 
-    async function submitAiRecommendationsFallback(payload) {
+    async function submitAiRecommendationsFallback(payload, signal) {
         showAiRecommendOutputLoading();
         var response = await fetch("/api/recommend", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
+            signal: signal,
         });
         var data = await response.json().catch(function () { return {}; });
         if (!response.ok) {
@@ -1167,6 +1187,57 @@
         });
     }
 
+    function logAiRecommend(event, detail) {
+        if (detail !== undefined) {
+            console.log("[ai-recommend] " + event, detail);
+        } else {
+            console.log("[ai-recommend] " + event);
+        }
+    }
+
+    function isRecommendAbortError(error) {
+        return !!(error && (error.name === "AbortError" || error.code === 20));
+    }
+
+    function clearAiRecommendTimeout() {
+        if (aiRecommendTimeoutId) {
+            clearTimeout(aiRecommendTimeoutId);
+            aiRecommendTimeoutId = null;
+        }
+    }
+
+    function armAiRecommendTimeout(controller) {
+        clearAiRecommendTimeout();
+        aiRecommendTimedOut = false;
+        aiRecommendTimeoutId = setTimeout(function () {
+            aiRecommendTimedOut = true;
+            logAiRecommend("request timed out");
+            if (controller) {
+                controller.abort();
+            }
+        }, AI_RECOMMEND_TIMEOUT_MS);
+    }
+
+    function resetAiRecommendLoadingUi() {
+        if (els.aiRecommendSubmit) {
+            els.aiRecommendSubmit.disabled = false;
+        }
+        if (els.aiRecommendSummary) {
+            els.aiRecommendSummary.classList.remove("is-streaming");
+        }
+        if (els.aiRecommendStatus) {
+            els.aiRecommendStatus.classList.remove("is-loading");
+        }
+    }
+
+    function setAiRecommendErrorMessage(message) {
+        if (!els.aiRecommendStatus) return;
+        els.aiRecommendStatus.hidden = false;
+        els.aiRecommendStatus.textContent = message;
+        els.aiRecommendStatus.classList.add("error");
+        els.aiRecommendStatus.classList.remove("is-loading");
+    }
+
     function setAiRecommendStatus(messageKey, isError) {
         if (!els.aiRecommendStatus) return;
         els.aiRecommendStatus.hidden = false;
@@ -1289,6 +1360,11 @@
         if (event) event.preventDefault();
         if (!els.aiRecommendInput || !els.aiRecommendSubmit) return;
 
+        if (aiRecommendInFlight) {
+            logAiRecommend("duplicate request ignored");
+            return;
+        }
+
         const message = els.aiRecommendInput.value.trim();
         if (!message) {
             els.aiRecommendInput.focus();
@@ -1297,61 +1373,88 @@
 
         const region = getAiRecommendRegion();
         const daysAhead = getAiRecommendDaysAhead();
+        const controller = new AbortController();
+        const signal = controller.signal;
+
+        aiRecommendInFlight = true;
+        aiRecommendActiveController = controller;
+        aiRecommendTimedOut = false;
+        logAiRecommend("request started", { region: region, daysAhead: daysAhead });
 
         els.aiRecommendSubmit.disabled = true;
         clearAiRecommendStatus();
-        setAiRecommendStatus("aiRecommendLoadingCatalog", false);
-
-        let catalog;
-        try {
-            catalog = await fetchCombinedAiCatalog(region, daysAhead);
-        } catch (error) {
-            setAiRecommendStatus("aiRecommendError", true);
-            hideAiRecommendOutput();
-            els.aiRecommendSubmit.disabled = false;
-            return;
-        }
-
-        state.aiCatalog = catalog;
-        if (!catalog.length) {
-            setAiRecommendStatus("aiRecommendEmptyCatalog", true);
-            hideAiRecommendOutput();
-            els.aiRecommendSubmit.disabled = false;
-            return;
-        }
-
-        setAiRecommendStatus("aiRecommendLoading", false);
-
-        const payload = {
-            message: message,
-            siteLanguage: siteLanguage,
-            region: region,
-            daysAhead: daysAhead,
-            movies: compactCatalogForAi(catalog),
-        };
-
-        showAiRecommendStreamingStart();
+        armAiRecommendTimeout(controller);
 
         try {
-            const streamed = await tryRecommendStream(payload);
-            if (!streamed) {
-                await submitAiRecommendationsFallback(payload);
+            setAiRecommendStatus("aiRecommendLoadingCatalog", false);
+
+            const catalog = await fetchCombinedAiCatalog(region, daysAhead, signal);
+            state.aiCatalog = catalog;
+
+            if (!catalog.length) {
+                setAiRecommendStatus("aiRecommendEmptyCatalog", true);
+                hideAiRecommendOutput();
+                logAiRecommend("request failed", { reason: "empty catalog" });
+                return;
+            }
+
+            setAiRecommendStatus("aiRecommendLoading", false);
+
+            const payload = {
+                message: message,
+                siteLanguage: siteLanguage,
+                region: region,
+                daysAhead: daysAhead,
+                movies: compactCatalogForAi(catalog),
+            };
+
+            showAiRecommendStreamingStart();
+            armAiRecommendTimeout(controller);
+
+            try {
+                const streamed = await tryRecommendStream(payload, signal);
+                if (streamed) {
+                    logAiRecommend("request completed", { path: "stream" });
+                } else {
+                    await submitAiRecommendationsFallback(payload, signal);
+                    logAiRecommend("request completed", { path: "fallback" });
+                }
+            } catch (streamError) {
+                if (isRecommendAbortError(streamError)) {
+                    throw streamError;
+                }
+                logAiRecommend("request failed", {
+                    path: "stream",
+                    error: streamError && streamError.message,
+                });
+                await submitAiRecommendationsFallback(payload, signal);
+                logAiRecommend("request completed", { path: "fallback-after-stream-error" });
             }
         } catch (error) {
-            try {
-                await submitAiRecommendationsFallback(payload);
-            } catch (fallbackError) {
+            hideAiRecommendOutput();
+            if (aiRecommendTimedOut) {
+                setAiRecommendStatus("aiRecommendTimeout", true);
+                logAiRecommend("request timed out");
+            } else if (isRecommendAbortError(error)) {
                 setAiRecommendStatus("aiRecommendError", true);
-                hideAiRecommendOutput();
-                const messageText = (fallbackError && fallbackError.message) ||
-                    (error && error.message) ||
-                    t("aiRecommendError");
-                if (messageText !== t("aiRecommendError")) {
-                    els.aiRecommendStatus.textContent = messageText;
+                logAiRecommend("request failed", { reason: "aborted" });
+            } else {
+                const messageText = (error && error.message) || t("aiRecommendError");
+                if (messageText === t("aiRecommendError")) {
+                    setAiRecommendStatus("aiRecommendError", true);
+                } else {
+                    setAiRecommendErrorMessage(messageText);
                 }
+                logAiRecommend("request failed", { error: messageText });
             }
         } finally {
-            els.aiRecommendSubmit.disabled = false;
+            clearAiRecommendTimeout();
+            aiRecommendInFlight = false;
+            if (aiRecommendActiveController === controller) {
+                aiRecommendActiveController = null;
+            }
+            resetAiRecommendLoadingUi();
+            logAiRecommend("loading state reset");
         }
     }
 
