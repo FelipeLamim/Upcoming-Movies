@@ -81,22 +81,16 @@
             </div>
 
             <h1 class="hero-title" data-i18n="heroTitle">Discover what's coming next — and what's in theaters now.</h1>
-            <p class="eyebrow" data-i18n="heroEyebrow">In theaters soon</p>
             <p class="hero-sub" data-i18n="heroSubtitle">
                 Discover upcoming theatrical releases — trailers, cast, and crew, all in one place.
             </p>
 
-            <div class="hero-ai">
-                <p class="hero-ai__eyebrow" data-i18n="heroAiEyebrow">Can't decide what to watch?</p>
-                <p class="hero-ai__text" data-i18n="heroAiText">
-                    Get personalized recommendations based on your favorite movies, genres, directors, and mood.
-                </p>
-            </div>
-
             <div class="hero-actions">
                 <button type="button" class="cta" id="explore-cta" data-i18n="cta">Explore Upcoming Movies</button>
-                <button type="button" class="cta cta--ghost" id="hero-ai-cta" data-i18n="heroAiCta">
-                    Try AI Recommendations
+                <button type="button" class="hero-ai-link" id="hero-ai-cta">
+                    <span class="hero-ai-link__spark" aria-hidden="true">✨</span>
+                    <span class="hero-ai-link__lead" data-i18n="heroAiTeaseLead">Need help choosing?</span>
+                    <span class="hero-ai-link__action" data-i18n="heroAiAction">Ask our AI →</span>
                 </button>
             </div>
             <p class="hero-caption" id="hero-caption"></p>
@@ -145,14 +139,31 @@
                         <h3 class="ai-recommend__title" id="ai-recommend-title" data-i18n="aiRecommendTitle">
                             Find your next watch
                         </h3>
-                        <p class="ai-recommend__hint" data-i18n="aiRecommendHint">
-                            Tell us what you like — we will pick from the current catalog only.
-                        </p>
+                    </div>
+
+                    <div class="ai-recommend__context">
+                        <div class="ai-recommend__context-grid">
+                            <label class="ai-recommend__control">
+                                <span class="ai-recommend__control-label" data-i18n="region">Region</span>
+                                <select id="ai-recommend-region" class="ai-recommend__select"></select>
+                            </label>
+                            <label class="ai-recommend__control">
+                                <span class="ai-recommend__control-label" data-i18n="aiRecommendWindow">Upcoming window</span>
+                                <select id="ai-recommend-days" class="ai-recommend__select"></select>
+                            </label>
+                        </div>
+                        <div class="ai-recommend__scope">
+                            <p class="ai-recommend__scope-title" data-i18n="aiRecommendScopeTitle">The AI will search:</p>
+                            <ul class="ai-recommend__scope-list">
+                                <li data-i18n="aiRecommendScopeNow">Movies currently in theaters</li>
+                                <li id="ai-recommend-scope-upcoming"></li>
+                            </ul>
+                        </div>
                     </div>
 
                     <form class="ai-recommend__form" id="ai-recommend-form">
                         <label class="ai-recommend__label" for="ai-recommend-input" data-i18n="aiRecommendLabel">
-                            Your preferences
+                            What are you in the mood for?
                         </label>
                         <textarea id="ai-recommend-input" class="ai-recommend__input" rows="3"
                                   maxlength="2000" data-i18n-placeholder="aiRecommendPlaceholder"

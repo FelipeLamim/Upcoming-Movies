@@ -21,7 +21,7 @@ GET /api/movie/<id>
     date, overview, trailer, cast, and grouped crew.
 
 POST /api/recommend
-    JSON body: message, mode, siteLanguage, movies (compact catalog snapshot).
+    JSON body: message, siteLanguage, region, daysAhead, movies (combined catalog snapshot).
     Calls OpenAI server-side and returns validated recommendations.
 
 POST /api/recommend/stream
@@ -82,8 +82,8 @@ MIN_OVERVIEW_LENGTH = 30
 MAX_MOVIES = 100
 
 # AI recommendation prompt limits.
-MAX_AI_CANDIDATES = 25
-MAX_AI_METADATA_FETCH = 10
+MAX_AI_CANDIDATES = 50
+MAX_AI_METADATA_FETCH = 20
 MAX_OVERVIEW_FOR_AI = 80
 MAX_CAST_FOR_AI = 4
 MAX_CREW_NAMES_PER_ROLE = 3
@@ -1007,7 +1007,8 @@ RECOMMEND_SYSTEM_PROMPT = """You are Movie Horizon's movie curator — warm, kno
 
 Rules:
 - Recommend ONLY movies from the catalog JSON. Each id MUST be copied exactly from the catalog.
-- Use title, overview, genres, releaseDate, popularity, and directors when judging fit.
+- The catalog combines movies currently in theaters (availability: nowPlaying) and upcoming releases (availability: upcoming). Recommend whichever best fits the request — already playing or arriving soon.
+- Use title, overview, genres, releaseDate, availability, popularity, and directors when judging fit.
 - Prioritize RELEVANCE over quantity. Return 0 to 5 recommendations — never pad with weak picks.
 - Return 1 movie if only 1 strong match exists. Return 0 if nothing is a strong match.
 - Do not stretch similarities or recommend unrelated popular movies to satisfy the user.
@@ -1115,7 +1116,7 @@ def read_json_body(handler):
     return json.loads(raw.decode("utf-8"))
 
 
-def compact_catalog_entry(movie, mode, ai_metadata=None):
+def compact_catalog_entry(movie, ai_metadata=None):
     """Lean movie payload for the AI prompt — title, genres, overview, date, popularity."""
     meta = ai_metadata or {}
     overview = (meta.get("overview") or movie.get("overview") or "").strip()
@@ -1129,6 +1130,9 @@ def compact_catalog_entry(movie, mode, ai_metadata=None):
         "releaseDate": movie.get("releaseDate") or "",
         "popularity": round(movie.get("popularity") or 0, 1),
     }
+    availability = movie.get("availability")
+    if availability in (MODE_NOW_PLAYING, MODE_UPCOMING):
+        entry["availability"] = availability
     if overview:
         entry["overview"] = overview
 
@@ -1325,7 +1329,7 @@ def order_movies_for_ai(all_movies, message, person_matches, ai_metadata_by_id=N
     return ordered
 
 
-def build_recommend_candidates(raw_movies, mode, message="", site_language="en"):
+def build_recommend_candidates(raw_movies, message="", site_language="en"):
     """Normalize catalog entries and pick the most relevant ones for the AI prompt."""
     catalog_by_id = {}
     all_movies = []
@@ -1369,7 +1373,7 @@ def build_recommend_candidates(raw_movies, mode, message="", site_language="en")
         if person_hit.get("directors"):
             merged = list(dict.fromkeys(person_hit["directors"] + (meta.get("directors") or [])))
             meta["directors"] = merged[:2]
-        entry = compact_catalog_entry(movie, mode, ai_metadata=meta)
+        entry = compact_catalog_entry(movie, ai_metadata=meta)
         entry["id"] = movie_id
         candidates.append(entry)
 
@@ -1424,13 +1428,16 @@ def openai_error_message(status_code, api_message, site_language):
     )
 
 
-def build_recommend_user_prompt(user_message, candidates, mode, site_language,
-                                  extra_instruction=None):
+def build_recommend_user_prompt(user_message, candidates, site_language, region,
+                                  days_ahead, extra_instruction=None):
     """Build the user message sent to OpenAI for recommendations."""
     valid_ids = [entry["id"] for entry in candidates]
     catalog_json = json.dumps(candidates, ensure_ascii=False)
     user_prompt = (
-        f"Browse mode: {mode}\n"
+        f"Recommendation scope for region {region}:\n"
+        f"- Movies currently in theaters (availability: nowPlaying)\n"
+        f"- Upcoming theatrical releases within the next {days_ahead} days "
+        f"(availability: upcoming)\n"
         f"Write the summary narrative in: {'Portuguese' if site_language == 'pt' else 'English'}\n"
         f"Valid catalog ids (use ONLY these): {', '.join(str(i) for i in valid_ids)}\n\n"
         f"User preferences:\n{user_message}\n\n"
@@ -1451,8 +1458,8 @@ def build_recommend_user_prompt(user_message, candidates, mode, site_language,
     return user_prompt
 
 
-def build_openai_recommend_request(user_message, candidates, mode, site_language,
-                                   extra_instruction=None, stream=False):
+def build_openai_recommend_request(user_message, candidates, site_language, region,
+                                   days_ahead, extra_instruction=None, stream=False):
     """Return the JSON body for OpenAI chat completions."""
     request_json = {
         "model": OPENAI_MODEL,
@@ -1461,7 +1468,8 @@ def build_openai_recommend_request(user_message, candidates, mode, site_language
             {
                 "role": "user",
                 "content": build_recommend_user_prompt(
-                    user_message, candidates, mode, site_language, extra_instruction
+                    user_message, candidates, site_language, region, days_ahead,
+                    extra_instruction,
                 ),
             },
         ],
@@ -1504,11 +1512,12 @@ def openai_recommend_headers():
     }
 
 
-def fetch_ai_recommendations(user_message, candidates, mode, site_language,
+def fetch_ai_recommendations(user_message, candidates, site_language, region, days_ahead,
                              extra_instruction=None):
     """Call OpenAI with the compact catalog and return parsed JSON recommendations."""
     request_json = build_openai_recommend_request(
-        user_message, candidates, mode, site_language, extra_instruction, stream=False
+        user_message, candidates, site_language, region, days_ahead,
+        extra_instruction, stream=False,
     )
     headers = openai_recommend_headers()
 
@@ -1563,11 +1572,12 @@ def fetch_ai_recommendations(user_message, candidates, mode, site_language,
     )
 
 
-def stream_ai_recommendations(user_message, candidates, mode, site_language,
+def stream_ai_recommendations(user_message, candidates, site_language, region, days_ahead,
                               extra_instruction=None):
     """Stream OpenAI JSON output; yield delta text and the final parsed payload."""
     request_json = build_openai_recommend_request(
-        user_message, candidates, mode, site_language, extra_instruction, stream=True
+        user_message, candidates, site_language, region, days_ahead,
+        extra_instruction, stream=True,
     )
     headers = openai_recommend_headers()
     openai_started = time.perf_counter()
@@ -1650,8 +1660,8 @@ def stream_ai_recommendations(user_message, candidates, mode, site_language,
     )
 
 
-def finalize_recommendation(message, candidates, catalog_by_id, mode, site_language,
-                            ai_payload, openai_seconds):
+def finalize_recommendation(message, candidates, catalog_by_id, site_language, region,
+                            days_ahead, ai_payload, openai_seconds):
     """Validate, optionally retry, enrich, and return the final recommendation payload."""
     parsed = parse_ai_recommendation_response(ai_payload, catalog_by_id, site_language)
 
@@ -1667,7 +1677,7 @@ def finalize_recommendation(message, candidates, catalog_by_id, mode, site_langu
             flush=True,
         )
         ai_payload, openai_seconds = fetch_ai_recommendations(
-            message, candidates, mode, site_language,
+            message, candidates, site_language, region, days_ahead,
             extra_instruction=retry_instruction,
         )
         parsed = parse_ai_recommendation_response(ai_payload, catalog_by_id, site_language)
@@ -1792,16 +1802,18 @@ class AppHandler(BaseHTTPRequestHandler):
                 f"Message is too long (max {MAX_RECOMMEND_MESSAGE} characters)."
             )
 
-        mode = normalize_mode(body.get("mode"))
         site_language = body.get("siteLanguage") or "en"
         if site_language not in SITE_LANGUAGE_MAP:
             site_language = "en"
+
+        region = (body.get("region") or "US").upper()
+        days_ahead = clamp_days_ahead(body.get("daysAhead"))
 
         raw_movies = body.get("movies")
         if not isinstance(raw_movies, list) or not raw_movies:
             raise ValueError("Catalog is empty. Load movies first.")
 
-        return message, mode, site_language, raw_movies
+        return message, site_language, raw_movies, region, days_ahead
 
     def send_static(self, relative_path):
         """Serve a whitelisted static file, guarding against path traversal."""
@@ -1907,12 +1919,12 @@ class AppHandler(BaseHTTPRequestHandler):
             )
             return
 
-        message, mode, site_language, raw_movies = self.read_recommend_request()
+        message, site_language, raw_movies, region, days_ahead = self.read_recommend_request()
 
         total_started = time.perf_counter()
         build_started = time.perf_counter()
         candidates, catalog_by_id = build_recommend_candidates(
-            raw_movies, mode, message, site_language
+            raw_movies, message, site_language
         )
         build_seconds = time.perf_counter() - build_started
         if not candidates:
@@ -1920,10 +1932,10 @@ class AppHandler(BaseHTTPRequestHandler):
             return
 
         ai_payload, openai_seconds = fetch_ai_recommendations(
-            message, candidates, mode, site_language
+            message, candidates, site_language, region, days_ahead
         )
         result = finalize_recommendation(
-            message, candidates, catalog_by_id, mode, site_language,
+            message, candidates, catalog_by_id, site_language, region, days_ahead,
             ai_payload, openai_seconds,
         )
         total_seconds = time.perf_counter() - total_started
@@ -1933,6 +1945,7 @@ class AppHandler(BaseHTTPRequestHandler):
             f"openai_time={result['openai_seconds']:.1f}s "
             f"total_time={total_seconds:.1f}s "
             f"returned={result['returned_count']} "
+            f"region={region} daysAhead={days_ahead} "
             f"siteLanguage={site_language}",
             flush=True,
         )
@@ -1949,12 +1962,12 @@ class AppHandler(BaseHTTPRequestHandler):
             )
             return
 
-        message, mode, site_language, raw_movies = self.read_recommend_request()
+        message, site_language, raw_movies, region, days_ahead = self.read_recommend_request()
 
         total_started = time.perf_counter()
         build_started = time.perf_counter()
         candidates, catalog_by_id = build_recommend_candidates(
-            raw_movies, mode, message, site_language
+            raw_movies, message, site_language
         )
         build_seconds = time.perf_counter() - build_started
         if not candidates:
@@ -1971,7 +1984,7 @@ class AppHandler(BaseHTTPRequestHandler):
         openai_seconds = 0.0
         first_chunk_seconds = None
         for event in stream_ai_recommendations(
-            message, candidates, mode, site_language
+            message, candidates, site_language, region, days_ahead
         ):
             if event[0] == "delta":
                 self.send_sse_event("delta", {"text": event[1]})
@@ -1981,7 +1994,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 first_chunk_seconds = event[3]
 
         result = finalize_recommendation(
-            message, candidates, catalog_by_id, mode, site_language,
+            message, candidates, catalog_by_id, site_language, region, days_ahead,
             ai_payload, openai_seconds,
         )
         total_seconds = time.perf_counter() - total_started
@@ -1997,6 +2010,7 @@ class AppHandler(BaseHTTPRequestHandler):
             f"openai_time={result['openai_seconds']:.1f}s "
             f"total_time={total_seconds:.1f}s "
             f"returned={result['returned_count']} "
+            f"region={region} daysAhead={days_ahead} "
             f"siteLanguage={site_language}",
             flush=True,
         )
