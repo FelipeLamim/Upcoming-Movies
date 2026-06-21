@@ -75,6 +75,7 @@
             aiRecommendResults: "Picked for you",
             aiRecommendLoading: "Finding the best matches…",
             aiRecommendLoadingAnalyzing: "Finding the best matches…",
+            aiRecommendStreamingIntro: "I'm looking through the current catalog…",
             aiRecommendError: "Could not get recommendations. Please try again.",
             aiRecommendEmptyCatalog: "Load the catalog first, or widen your filters.",
             aiRecommendReason: "Why it matches:",
@@ -147,6 +148,7 @@
             aiRecommendResults: "Escolhidos para você",
             aiRecommendLoading: "Buscando as melhores opções…",
             aiRecommendLoadingAnalyzing: "Buscando as melhores opções…",
+            aiRecommendStreamingIntro: "Estou analisando o catálogo atual…",
             aiRecommendError: "Não foi possível obter recomendações. Tente novamente.",
             aiRecommendEmptyCatalog: "Carregue o catálogo primeiro ou amplie seus filtros.",
             aiRecommendReason: "Por que combina:",
@@ -770,6 +772,165 @@
         return text;
     }
 
+    let aiStreamText = "";
+
+    function setAiRecommendStreamingNarrative(text, isStreaming) {
+        if (!els.aiRecommendSummary) return;
+        var narrativeText = text || "";
+        if (!narrativeText) {
+            els.aiRecommendSummary.textContent = "";
+            els.aiRecommendSummary.classList.remove("is-visible", "is-streaming");
+            els.aiRecommendSummary.setAttribute("hidden", "");
+            return;
+        }
+        els.aiRecommendSummary.textContent = narrativeText;
+        els.aiRecommendSummary.classList.add("is-visible");
+        els.aiRecommendSummary.classList.toggle("is-streaming", !!isStreaming);
+        els.aiRecommendSummary.removeAttribute("hidden");
+    }
+
+    function appendAiStreamDelta(chunk) {
+        aiStreamText += chunk || "";
+        setAiRecommendStreamingNarrative(aiStreamText, true);
+    }
+
+    function showAiRecommendStreamingStart() {
+        hideAiRecommendOutput();
+        aiStreamText = "";
+        if (els.aiRecommendOutput) {
+            els.aiRecommendOutput.hidden = false;
+            els.aiRecommendOutput.removeAttribute("hidden");
+        }
+        if (els.aiRecommendResultsTitle) {
+            els.aiRecommendResultsTitle.hidden = false;
+            els.aiRecommendResultsTitle.removeAttribute("hidden");
+        }
+        if (els.aiRecommendGrid) {
+            els.aiRecommendGrid.innerHTML = "";
+        }
+        setAiRecommendStreamingNarrative(t("aiRecommendStreamingIntro"), true);
+    }
+
+    function parseRecommendSseEvent(raw, handlers) {
+        var eventName = "message";
+        var dataLines = [];
+        raw.split("\n").forEach(function (line) {
+            if (line.indexOf("event:") === 0) {
+                eventName = line.slice(6).trim();
+            } else if (line.indexOf("data:") === 0) {
+                dataLines.push(line.slice(5).trim());
+            }
+        });
+        if (!dataLines.length) return;
+        var payload;
+        try {
+            payload = JSON.parse(dataLines.join("\n"));
+        } catch (error) {
+            return;
+        }
+        if (eventName === "delta" && payload.text) {
+            handlers.onDelta(payload.text);
+        } else if (eventName === "done") {
+            handlers.onDone(payload);
+        } else if (eventName === "error") {
+            handlers.onError(payload.error || t("aiRecommendError"));
+        }
+    }
+
+    async function consumeRecommendSse(response, handlers) {
+        if (!response.body) {
+            throw new Error(t("aiRecommendError"));
+        }
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = "";
+        while (true) {
+            var chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var boundary;
+            while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+                var rawEvent = buffer.slice(0, boundary);
+                buffer = buffer.slice(boundary + 2);
+                parseRecommendSseEvent(rawEvent, handlers);
+            }
+        }
+        if (buffer.trim()) {
+            parseRecommendSseEvent(buffer, handlers);
+        }
+    }
+
+    async function tryRecommendStream(payload) {
+        var response = await fetch("/api/recommend/stream", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Accept: "text/event-stream",
+            },
+            body: JSON.stringify(payload),
+        });
+
+        if (response.status === 404) {
+            return false;
+        }
+
+        var contentType = response.headers.get("content-type") || "";
+        if (!response.ok) {
+            if (contentType.indexOf("application/json") >= 0) {
+                var errorData = await response.json().catch(function () { return {}; });
+                throw new Error(errorData.error || t("aiRecommendError"));
+            }
+            return false;
+        }
+
+        if (contentType.indexOf("text/event-stream") < 0) {
+            return false;
+        }
+
+        var finished = false;
+        await consumeRecommendSse(response, {
+            onDelta: function (text) {
+                if (aiStreamText === t("aiRecommendStreamingIntro")) {
+                    aiStreamText = "";
+                }
+                appendAiStreamDelta(text);
+            },
+            onDone: function (data) {
+                finished = true;
+                if (els.aiRecommendSummary) {
+                    els.aiRecommendSummary.classList.remove("is-streaming");
+                }
+                clearAiRecommendStatus();
+                var apiSummary = data.summary || data.narrative || data.explanation || "";
+                renderAiRecommendations(apiSummary, data.recommendations || []);
+            },
+            onError: function (message) {
+                throw new Error(message || t("aiRecommendError"));
+            },
+        });
+
+        if (!finished) {
+            throw new Error(t("aiRecommendError"));
+        }
+        return true;
+    }
+
+    async function submitAiRecommendationsFallback(payload) {
+        showAiRecommendOutputLoading();
+        var response = await fetch("/api/recommend", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+        var data = await response.json().catch(function () { return {}; });
+        if (!response.ok) {
+            throw new Error(data.error || t("aiRecommendError"));
+        }
+        clearAiRecommendStatus();
+        var apiSummary = data.summary || data.narrative || data.explanation || "";
+        renderAiRecommendations(apiSummary, data.recommendations || []);
+    }
+
     function setAiRecommendNarrative(text) {
         if (!els.aiRecommendSummary) return;
         var narrativeText = (text || "").trim();
@@ -781,6 +942,7 @@
         }
         els.aiRecommendSummary.innerHTML = formatAiNarrative(narrativeText);
         els.aiRecommendSummary.classList.add("is-visible");
+        els.aiRecommendSummary.classList.remove("is-streaming");
         els.aiRecommendSummary.removeAttribute("hidden");
     }
 
@@ -907,9 +1069,10 @@
         }
         if (els.aiRecommendSummary) {
             els.aiRecommendSummary.innerHTML = "";
-            els.aiRecommendSummary.classList.remove("is-visible");
+            els.aiRecommendSummary.classList.remove("is-visible", "is-streaming");
             els.aiRecommendSummary.setAttribute("hidden", "");
         }
+        aiStreamText = "";
         if (els.aiRecommendGrid) {
             els.aiRecommendGrid.innerHTML = "";
         }
@@ -1021,31 +1184,33 @@
         els.aiRecommendSubmit.disabled = true;
         clearAiRecommendStatus();
         setAiRecommendStatus("aiRecommendLoading", false);
-        showAiRecommendOutputLoading();
+
+        const payload = {
+            message: message,
+            mode: getMode(),
+            siteLanguage: siteLanguage,
+            movies: compactCatalogForAi(catalog),
+        };
+
+        showAiRecommendStreamingStart();
 
         try {
-            const response = await fetch("/api/recommend", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    message: message,
-                    mode: getMode(),
-                    siteLanguage: siteLanguage,
-                    movies: compactCatalogForAi(catalog),
-                }),
-            });
-            const data = await response.json().catch(function () { return {}; });
-            if (!response.ok) {
-                throw new Error(data.error || t("aiRecommendError"));
+            const streamed = await tryRecommendStream(payload);
+            if (!streamed) {
+                await submitAiRecommendationsFallback(payload);
             }
-            clearAiRecommendStatus();
-            var apiSummary = data.summary || data.narrative || data.explanation || "";
-            renderAiRecommendations(apiSummary, data.recommendations || []);
         } catch (error) {
-            setAiRecommendStatus("aiRecommendError", true);
-            hideAiRecommendOutput();
-            if (error && error.message && error.message !== t("aiRecommendError")) {
-                els.aiRecommendStatus.textContent = error.message;
+            try {
+                await submitAiRecommendationsFallback(payload);
+            } catch (fallbackError) {
+                setAiRecommendStatus("aiRecommendError", true);
+                hideAiRecommendOutput();
+                const messageText = (fallbackError && fallbackError.message) ||
+                    (error && error.message) ||
+                    t("aiRecommendError");
+                if (messageText !== t("aiRecommendError")) {
+                    els.aiRecommendStatus.textContent = messageText;
+                }
             }
         } finally {
             els.aiRecommendSubmit.disabled = false;

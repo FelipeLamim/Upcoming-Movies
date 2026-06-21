@@ -656,6 +656,22 @@ a { color: inherit; text-decoration: none; }
     display: none !important;
 }
 
+.ai-recommend__narrative.is-streaming::after {
+    content: "";
+    display: inline-block;
+    width: 2px;
+    height: 0.95em;
+    margin-left: 3px;
+    vertical-align: -0.08em;
+    background: var(--gold);
+    animation: ai-recommend-cursor 1s step-end infinite;
+}
+
+@keyframes ai-recommend-cursor {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}
+
 .ai-recommend__narrative p {
     margin: 0 0 14px;
 }

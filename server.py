@@ -22,7 +22,11 @@ GET /api/movie/<id>
 
 POST /api/recommend
     JSON body: message, mode, siteLanguage, movies (compact catalog snapshot).
-    Calls OpenAI server-side and returns 3–5 catalog-only recommendations.
+    Calls OpenAI server-side and returns validated recommendations.
+
+POST /api/recommend/stream
+    Same request body as /api/recommend. Streams the summary narrative via SSE,
+    then sends validated recommendations in a final done event.
 """
 
 import json
@@ -1420,9 +1424,9 @@ def openai_error_message(status_code, api_message, site_language):
     )
 
 
-def fetch_ai_recommendations(user_message, candidates, mode, site_language,
-                             extra_instruction=None):
-    """Call OpenAI with the compact catalog and return parsed JSON recommendations."""
+def build_recommend_user_prompt(user_message, candidates, mode, site_language,
+                                  extra_instruction=None):
+    """Build the user message sent to OpenAI for recommendations."""
     valid_ids = [entry["id"] for entry in candidates]
     catalog_json = json.dumps(candidates, ensure_ascii=False)
     user_prompt = (
@@ -1444,21 +1448,69 @@ def fetch_ai_recommendations(user_message, candidates, mode, site_language,
         )
     if person_lines:
         user_prompt += "\n\nStrong matches for this query:\n" + "\n".join(person_lines[:6])
+    return user_prompt
 
+
+def build_openai_recommend_request(user_message, candidates, mode, site_language,
+                                   extra_instruction=None, stream=False):
+    """Return the JSON body for OpenAI chat completions."""
     request_json = {
         "model": OPENAI_MODEL,
         "messages": [
             {"role": "system", "content": RECOMMEND_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
+            {
+                "role": "user",
+                "content": build_recommend_user_prompt(
+                    user_message, candidates, mode, site_language, extra_instruction
+                ),
+            },
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.45,
         "max_tokens": 1200,
+        "stream": stream,
     }
-    headers = {
+    return request_json
+
+
+def extract_streaming_summary_partial(raw):
+    """Best-effort summary text from a partial JSON object response."""
+    key_match = re.search(r'"summary"\s*:\s*"', raw)
+    if not key_match:
+        return ""
+    index = key_match.end()
+    chars = []
+    while index < len(raw):
+        char = raw[index]
+        if char == '"':
+            break
+        if char == "\\":
+            if index + 1 >= len(raw):
+                break
+            nxt = raw[index + 1]
+            escape_map = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\"}
+            chars.append(escape_map.get(nxt, nxt))
+            index += 2
+            continue
+        chars.append(char)
+        index += 1
+    return "".join(chars)
+
+
+def openai_recommend_headers():
+    return {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
+
+
+def fetch_ai_recommendations(user_message, candidates, mode, site_language,
+                             extra_instruction=None):
+    """Call OpenAI with the compact catalog and return parsed JSON recommendations."""
+    request_json = build_openai_recommend_request(
+        user_message, candidates, mode, site_language, extra_instruction, stream=False
+    )
+    headers = openai_recommend_headers()
 
     last_error = None
     openai_started = time.perf_counter()
@@ -1509,6 +1561,124 @@ def fetch_ai_recommendations(user_message, candidates, mode, site_language,
         openai_error_message(429, "", site_language),
         status=429,
     )
+
+
+def stream_ai_recommendations(user_message, candidates, mode, site_language,
+                              extra_instruction=None):
+    """Stream OpenAI JSON output; yield delta text and the final parsed payload."""
+    request_json = build_openai_recommend_request(
+        user_message, candidates, mode, site_language, extra_instruction, stream=True
+    )
+    headers = openai_recommend_headers()
+    openai_started = time.perf_counter()
+    first_chunk_at = None
+    content_buffer = ""
+    last_preview = ""
+
+    for attempt in range(2):
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=request_json,
+                stream=True,
+                timeout=60,
+            )
+        except requests.RequestException as error:
+            if attempt == 0:
+                time.sleep(1)
+                continue
+            raise RecommendRequestError(
+                openai_error_message(0, "", site_language),
+                status=502,
+            ) from error
+
+        if response.status_code == 429 and attempt == 0:
+            time.sleep(2)
+            continue
+
+        if not response.ok:
+            api_message = ""
+            try:
+                api_message = response.json().get("error", {}).get("message", "")
+            except ValueError:
+                pass
+            status = 429 if response.status_code == 429 else 502
+            raise RecommendRequestError(
+                openai_error_message(response.status_code, api_message, site_language),
+                status=status,
+            )
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            data_str = line[6:].strip()
+            if data_str == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            delta = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content") or ""
+            if not delta:
+                continue
+            if first_chunk_at is None:
+                first_chunk_at = time.perf_counter() - openai_started
+            content_buffer += delta
+            preview = extract_streaming_summary_partial(content_buffer)
+            if len(preview) > len(last_preview):
+                new_text = preview[len(last_preview):]
+                last_preview = preview
+                if new_text:
+                    yield ("delta", new_text)
+
+        openai_seconds = time.perf_counter() - openai_started
+        first_chunk_seconds = first_chunk_at if first_chunk_at is not None else openai_seconds
+        try:
+            ai_payload = json.loads(content_buffer)
+        except json.JSONDecodeError as error:
+            raise RecommendRequestError(
+                openai_error_message(0, "", site_language),
+                status=502,
+            ) from error
+        yield ("complete", ai_payload, openai_seconds, first_chunk_seconds)
+        return
+
+    raise RecommendRequestError(
+        openai_error_message(429, "", site_language),
+        status=429,
+    )
+
+
+def finalize_recommendation(message, candidates, catalog_by_id, mode, site_language,
+                            ai_payload, openai_seconds):
+    """Validate, optionally retry, enrich, and return the final recommendation payload."""
+    parsed = parse_ai_recommendation_response(ai_payload, catalog_by_id, site_language)
+
+    if parsed["invalid_ids"]:
+        valid_ids = [entry["id"] for entry in candidates]
+        retry_instruction = RECOMMEND_RETRY_INSTRUCTION.format(
+            ids=", ".join(str(i) for i in valid_ids),
+            max_count=MAX_RECOMMEND_COUNT,
+        )
+        print(
+            f"[recommend] retry invalid_ids count={len(parsed['recommendations'])} "
+            f"catalog={len(candidates)}",
+            flush=True,
+        )
+        ai_payload, openai_seconds = fetch_ai_recommendations(
+            message, candidates, mode, site_language,
+            extra_instruction=retry_instruction,
+        )
+        parsed = parse_ai_recommendation_response(ai_payload, catalog_by_id, site_language)
+
+    recommendations = enrich_recommendations(parsed["recommendations"], catalog_by_id)
+    return {
+        "summary": parsed["summary"],
+        "recommendations": recommendations,
+        "openai_seconds": openai_seconds,
+        "returned_count": len(recommendations),
+    }
 
 
 def parse_ai_recommendation_response(ai_payload, catalog_by_id, site_language):
@@ -1598,6 +1768,41 @@ class AppHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_sse_headers(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+    def send_sse_event(self, event, payload):
+        data = json.dumps(payload, ensure_ascii=False)
+        message = f"event: {event}\ndata: {data}\n\n"
+        self.wfile.write(message.encode("utf-8"))
+        self.wfile.flush()
+
+    def read_recommend_request(self):
+        """Parse and validate a recommendation request body."""
+        body = read_json_body(self)
+        message = (body.get("message") or "").strip()
+        if not message:
+            raise ValueError("Please describe what you are looking for.")
+        if len(message) > MAX_RECOMMEND_MESSAGE:
+            raise ValueError(
+                f"Message is too long (max {MAX_RECOMMEND_MESSAGE} characters)."
+            )
+
+        mode = normalize_mode(body.get("mode"))
+        site_language = body.get("siteLanguage") or "en"
+        if site_language not in SITE_LANGUAGE_MAP:
+            site_language = "en"
+
+        raw_movies = body.get("movies")
+        if not isinstance(raw_movies, list) or not raw_movies:
+            raise ValueError("Catalog is empty. Load movies first.")
+
+        return message, mode, site_language, raw_movies
+
     def send_static(self, relative_path):
         """Serve a whitelisted static file, guarding against path traversal."""
         # index.html and movie.html live at the project root; everything else
@@ -1660,21 +1865,38 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path != "/api/recommend":
+        if parsed.path not in ("/api/recommend", "/api/recommend/stream"):
             self.send_error(404, "Not found")
             return
 
         try:
-            self.handle_recommend()
+            if parsed.path == "/api/recommend/stream":
+                self.handle_recommend_stream()
+            else:
+                self.handle_recommend()
         except json.JSONDecodeError:
             self.send_json({"error": "Invalid JSON body."}, status=400)
         except ValueError as error:
             self.send_json({"error": str(error)}, status=400)
         except RecommendRequestError as error:
-            self.send_json({"error": error.message}, status=error.status)
+            if parsed.path == "/api/recommend/stream":
+                try:
+                    self.send_sse_headers()
+                    self.send_sse_event("error", {"error": error.message})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            else:
+                self.send_json({"error": error.message}, status=error.status)
             print(f"  ! AI request failed: {error.message}")
         except requests.RequestException as error:
-            self.send_json({"error": "AI service request failed."}, status=502)
+            if parsed.path == "/api/recommend/stream":
+                try:
+                    self.send_sse_headers()
+                    self.send_sse_event("error", {"error": "AI service request failed."})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            else:
+                self.send_json({"error": "AI service request failed."}, status=502)
             print(f"  ! AI request failed: {error}")
 
     def handle_recommend(self):
@@ -1685,27 +1907,7 @@ class AppHandler(BaseHTTPRequestHandler):
             )
             return
 
-        body = read_json_body(self)
-        message = (body.get("message") or "").strip()
-        if not message:
-            self.send_json({"error": "Please describe what you are looking for."}, status=400)
-            return
-        if len(message) > MAX_RECOMMEND_MESSAGE:
-            self.send_json(
-                {"error": f"Message is too long (max {MAX_RECOMMEND_MESSAGE} characters)."},
-                status=400,
-            )
-            return
-
-        mode = normalize_mode(body.get("mode"))
-        site_language = body.get("siteLanguage") or "en"
-        if site_language not in SITE_LANGUAGE_MAP:
-            site_language = "en"
-
-        raw_movies = body.get("movies")
-        if not isinstance(raw_movies, list) or not raw_movies:
-            self.send_json({"error": "Catalog is empty. Load movies first."}, status=400)
-            return
+        message, mode, site_language, raw_movies = self.read_recommend_request()
 
         total_started = time.perf_counter()
         build_started = time.perf_counter()
@@ -1720,41 +1922,87 @@ class AppHandler(BaseHTTPRequestHandler):
         ai_payload, openai_seconds = fetch_ai_recommendations(
             message, candidates, mode, site_language
         )
-        parsed = parse_ai_recommendation_response(ai_payload, catalog_by_id, site_language)
-
-        if parsed["invalid_ids"]:
-            valid_ids = [entry["id"] for entry in candidates]
-            retry_instruction = RECOMMEND_RETRY_INSTRUCTION.format(
-                ids=", ".join(str(i) for i in valid_ids),
-                max_count=MAX_RECOMMEND_COUNT,
-            )
-            print(
-                f"[recommend] retry invalid_ids count={len(parsed['recommendations'])} "
-                f"catalog={len(candidates)}",
-                flush=True,
-            )
-            ai_payload, openai_seconds = fetch_ai_recommendations(
-                message, candidates, mode, site_language,
-                extra_instruction=retry_instruction,
-            )
-            parsed = parse_ai_recommendation_response(ai_payload, catalog_by_id, site_language)
-
-        recommendations = enrich_recommendations(
-            parsed["recommendations"], catalog_by_id
+        result = finalize_recommendation(
+            message, candidates, catalog_by_id, mode, site_language,
+            ai_payload, openai_seconds,
         )
         total_seconds = time.perf_counter() - total_started
         print(
             f"[recommend] catalog={len(candidates)} "
             f"build_time={build_seconds:.1f}s "
-            f"openai_time={openai_seconds:.1f}s "
+            f"openai_time={result['openai_seconds']:.1f}s "
             f"total_time={total_seconds:.1f}s "
-            f"returned={len(recommendations)} "
+            f"returned={result['returned_count']} "
             f"siteLanguage={site_language}",
             flush=True,
         )
         self.send_json({
-            "summary": parsed["summary"],
-            "recommendations": recommendations,
+            "summary": result["summary"],
+            "recommendations": result["recommendations"],
+        })
+
+    def handle_recommend_stream(self):
+        if not OPENAI_API_KEY:
+            self.send_json(
+                {"error": "AI recommendations are not configured."},
+                status=503,
+            )
+            return
+
+        message, mode, site_language, raw_movies = self.read_recommend_request()
+
+        total_started = time.perf_counter()
+        build_started = time.perf_counter()
+        candidates, catalog_by_id = build_recommend_candidates(
+            raw_movies, mode, message, site_language
+        )
+        build_seconds = time.perf_counter() - build_started
+        if not candidates:
+            self.send_json({"error": "Catalog is empty. Load movies first."}, status=400)
+            return
+
+        self.send_sse_headers()
+        self.send_sse_event("status", {
+            "phase": "streaming",
+            "catalogCount": len(candidates),
+        })
+
+        ai_payload = None
+        openai_seconds = 0.0
+        first_chunk_seconds = None
+        for event in stream_ai_recommendations(
+            message, candidates, mode, site_language
+        ):
+            if event[0] == "delta":
+                self.send_sse_event("delta", {"text": event[1]})
+            elif event[0] == "complete":
+                ai_payload = event[1]
+                openai_seconds = event[2]
+                first_chunk_seconds = event[3]
+
+        result = finalize_recommendation(
+            message, candidates, catalog_by_id, mode, site_language,
+            ai_payload, openai_seconds,
+        )
+        total_seconds = time.perf_counter() - total_started
+        first_chunk_label = (
+            f"{first_chunk_seconds:.1f}s"
+            if first_chunk_seconds is not None
+            else "n/a"
+        )
+        print(
+            f"[recommend-stream] catalog={len(candidates)} "
+            f"build_time={build_seconds:.1f}s "
+            f"first_chunk_time={first_chunk_label} "
+            f"openai_time={result['openai_seconds']:.1f}s "
+            f"total_time={total_seconds:.1f}s "
+            f"returned={result['returned_count']} "
+            f"siteLanguage={site_language}",
+            flush=True,
+        )
+        self.send_sse_event("done", {
+            "summary": result["summary"],
+            "recommendations": result["recommendations"],
         })
 
     def handle_upcoming(self, query):
